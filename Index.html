@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mi Cartera Pro - Control Financiero</title>
+  
+  <!-- Tailwind CSS para diseño ultra-moderno -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & Babel para ejecución directa -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Lucide Icons para iconos modernos -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Scripts de Google API e Identity Services para la sincronización con Drive -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
+
+  <style>
+    /* Estilo para barra de scroll personalizada y suavizado */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+  </style>
+</head>
+<body class="bg-[#0b0f19] text-[#f1f5f9] font-sans antialiased">
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // Estado inicial de la aplicación
+    const initialState = {
+      accounts: [
+        { id: "1", name: "Efectivo", balance: 1000 },
+        { id: "2", name: "Tarjeta de Débito", balance: 5000 }
+      ],
+      categories: [
+        { id: "1", name: "Alimentos", type: "expense" },
+        { id: "2", name: "Servicios", type: "expense" },
+        { id: "3", name: "Sueldo", type: "income" },
+        { id: "4", name: "Inversiones", type: "income" },
+        { id: "5", name: "Transporte", type: "expense" }
+      ],
+      transactions: [],
+      archivedPeriods: [],
+      currentPeriodStart: new Date().toISOString().split("T")[0],
+    };
+
+    const TODAY = () => new Date().toISOString().split("T")[0];
+
+    // Formateador de moneda MXN
+    function fmt(n) {
+      return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n || 0);
+    }
+
+    function App() {
+      // --- ESTADOS PRINCIPALES ---
+      const [state, setState] = useState(() => {
+        try {
+          const local = localStorage.getItem("expense_app_v2");
+          return local ? JSON.parse(local) : initialState;
+        } catch {
+          return initialState;
+        }
+      });
+
+      const [screen, setScreen] = useState("home"); // home | income | expense | accounts | categories | transfers | queries | period | breakdown | archive | sync_settings | help
+      const [menuOpen, setMenuOpen] = useState(false);
+      const [showBreakdown, setShowBreakdown] = useState(false);
+      const [toast, setToast] = useState(null);
+
+      // --- CONFIGURACIÓN DE GOOGLE DRIVE ---
+      const [gdriveConfig, setGdriveConfig] = useState(() => {
+        try {
+          const config = localStorage.getItem("gdrive_config");
+          return config ? JSON.parse(config) : { clientId: "", apiKey: "" };
+        } catch {
+          return { clientId: "", apiKey: "" };
+        }
+      });
+
+      const [gdUser, setGdUser] = useState(null); // Datos del usuario autenticado
+      const [gdToken, setGdToken] = useState(null); // Access token de Google
+      const [gdFileId, setGdFileId] = useState(null); // ID del archivo en Google Drive
+      const [syncStatus, setSyncStatus] = useState("disconnected"); // disconnected | connecting | connected | syncing | success | error
+      const [lastSyncTime, setLastSyncTime] = useState(null);
+
+      // --- FORMULARIOS ---
+      const [form, setForm] = useState({ amount: "", accountId: "", categoryId: "", note: "", date: TODAY() });
+      const [formType, setFormType] = useState("expense");
+      const [accForm, setAccForm] = useState({ name: "", balance: "" });
+      const [editAcc, setEditAcc] = useState(null);
+      const [catForm, setCatForm] = useState({ name: "", type: "expense" });
+      const [trfForm, setTrfForm] = useState({ fromId: "", toId: "", amount: "", date: TODAY() });
+      const [qFilter, setQFilter] = useState({ categoryId: "", accountId: "", from: "", to: "" });
+      const [periodConfirm, setPeriodConfirm] = useState(false);
+
+      // Guardar en localStorage automáticamente ante cualquier cambio local
+      useEffect(() => {
+        localStorage.setItem("expense_app_v2", JSON.stringify(state));
+      }, [state]);
+
+      // Guardar credenciales de Google Drive
+      useEffect(() => {
+        localStorage.setItem("gdrive_config", JSON.stringify(gdriveConfig));
+      }, [gdriveConfig]);
+
+      // --- NOTIFICACIONES TOAST ---
+      const showToast = (msg, type = "success") => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 3000);
+      };
+
+      // --- CÁLCULO DE TOTALES ---
+      const totalBalance = useMemo(() => {
+        return state.accounts.reduce((s, a) => s + (a.balance || 0), 0);
+      }, [state.accounts]);
+
+      const recentTx = useMemo(() => {
+        return [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+      }, [state.transactions]);
+
+      // --- MANEJO DE NAVEGACIÓN ---
+      function openScreen(s, type) {
+        setMenuOpen(false);
+        if (type) {
+          setFormType(type);
+          const defaultCat = state.categories.find(c => c.type === type)?.id || "";
+          setForm({ 
+            amount: "", 
+            accountId: state.accounts[0]?.id || "", 
+            categoryId: defaultCat, 
+            note: "", 
+            date: TODAY() 
+          });
+        }
+        setScreen(s);
+      }
+
+      // --- CONTROL DE ACCIONES ---
+      function submitTransaction() {
+        if (!form.amount || !form.accountId || !form.categoryId) {
+          return showToast("Completa todos los campos requeridos", "error");
+        }
+        const amt = parseFloat(form.amount);
+        if (isNaN(amt) || amt <= 0) return showToast("Monto inválido", "error");
+        
+        const acc = state.accounts.find(a => a.id === form.accountId);
+        if (!acc) return;
+        if (formType === "expense" && acc.balance < amt) {
+          return showToast("Saldo insuficiente en esa cuenta", "error");
+        }
+
+        const newTx = {
+          id: Date.now().toString(),
+          type: formType,
+          amount: amt,
+          accountId: form.accountId,
+          categoryId: form.categoryId,
+          note: form.note,
+          date: form.date,
+          accountName: acc.name,
+          categoryName: state.categories.find(c => c.id === form.categoryId)?.name || "Sin categoría",
+        };
+
+        const newAccounts = state.accounts.map(a =>
+          a.id === form.accountId
+            ? { ...a, balance: formType === "income" ? a.balance + amt : a.balance - amt }
+            : a
+        );
+
+        const updatedState = { ...state, transactions: [...state.transactions, newTx], accounts: newAccounts };
+        setState(updatedState);
+        showToast(formType === "income" ? "¡Ingreso registrado con éxito!" : "¡Gasto registrado con éxito!");
+        setScreen("home");
+        
+        // Auto-sincronizar si está conectado a Google Drive
+        if (syncStatus === "connected") {
+          autoSyncToDrive(updatedState);
+        }
+      }
+
+      function submitAccount() {
+        const bal = parseFloat(accForm.balance);
+        if (!accForm.name || isNaN(bal)) return showToast("Completa los campos correctamente", "error");
+        
+        let newAccounts;
+        if (editAcc) {
+          newAccounts = state.accounts.map(a =>
+            a.id === editAcc.id ? { ...a, name: accForm.name, balance: bal } : a
+          );
+          setEditAcc(null);
+        } else {
+          const newAcc = { id: Date.now().toString(), name: accForm.name, balance: bal };
+          newAccounts = [...state.accounts, newAcc];
+        }
+
+        const updatedState = { ...state, accounts: newAccounts };
+        setState(updatedState);
+        setAccForm({ name: "", balance: "" });
+        showToast("Cuenta guardada correctamente");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      function deleteAccount(id) {
+        const updatedState = {
+          ...state,
+          accounts: state.accounts.filter(a => a.id !== id),
+          transactions: state.transactions.filter(t => t.accountId !== id),
+        };
+        setState(updatedState);
+        showToast("Cuenta y sus movimientos eliminados", "warning");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      function submitCategory() {
+        if (!catForm.name) return showToast("Escribe un nombre de categoría", "error");
+        const newCat = { id: Date.now().toString(), name: catForm.name, type: catForm.type };
+        
+        const updatedState = { ...state, categories: [...state.categories, newCat] };
+        setState(updatedState);
+        setCatForm({ name: "", type: "expense" });
+        showToast("Categoría agregada con éxito");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      function deleteCategory(id) {
+        const updatedState = { ...state, categories: state.categories.filter(c => c.id !== id) };
+        setState(updatedState);
+        showToast("Categoría eliminada", "warning");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      function submitTransfer() {
+        if (!trfForm.fromId || !trfForm.toId || !trfForm.amount) return showToast("Completa todos los campos", "error");
+        if (trfForm.fromId === trfForm.toId) return showToast("Las cuentas deben ser diferentes", "error");
+        
+        const amt = parseFloat(trfForm.amount);
+        if (isNaN(amt) || amt <= 0) return showToast("Monto inválido", "error");
+        
+        const fromAcc = state.accounts.find(a => a.id === trfForm.fromId);
+        if (fromAcc.balance < amt) return showToast("Saldo insuficiente en cuenta origen", "error");
+
+        const newAccounts = state.accounts.map(a => {
+          if (a.id === trfForm.fromId) return { ...a, balance: a.balance - amt };
+          if (a.id === trfForm.toId) return { ...a, balance: a.balance + amt };
+          return a;
+        });
+
+        const toAcc = state.accounts.find(a => a.id === trfForm.toId);
+        const trfTx = {
+          id: Date.now().toString(),
+          type: "transfer",
+          amount: amt,
+          fromId: trfForm.fromId,
+          toId: trfForm.toId,
+          fromName: fromAcc.name,
+          toName: toAcc.name,
+          date: trfForm.date,
+          note: `Transferencia: ${fromAcc.name} ➔ ${toAcc.name}`,
+          accountId: trfForm.fromId,
+          categoryId: "__transfer__",
+          categoryName: "Transferencia",
+          accountName: fromAcc.name,
+        };
+
+        const updatedState = { ...state, accounts: newAccounts, transactions: [...state.transactions, trfTx] };
+        setState(updatedState);
+        setTrfForm({ fromId: "", toId: "", amount: "", date: TODAY() });
+        showToast("¡Transferencia realizada con éxito!");
+        setScreen("home");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      function doMonthEnd() {
+        const label = new Date().toLocaleDateString("es-MX", { month: "long", year: "numeric" });
+        const period = {
+          id: Date.now().toString(),
+          label,
+          start: state.currentPeriodStart,
+          end: TODAY(),
+          transactions: state.transactions,
+          accounts: state.accounts,
+        };
+
+        const updatedState = {
+          ...state,
+          archivedPeriods: [...state.archivedPeriods, period],
+          transactions: [],
+          currentPeriodStart: TODAY(),
+        };
+
+        setState(updatedState);
+        setPeriodConfirm(false);
+        showToast(`Corte de ${label} archivado con éxito`);
+        setScreen("home");
+
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      // --- FILTRADO DE CONSULTAS ---
+      const qResults = useMemo(() => {
+        return state.transactions.filter(t => {
+          if (t.type === "transfer") return false;
+          if (qFilter.categoryId && t.categoryId !== qFilter.categoryId) return false;
+          if (qFilter.accountId && t.accountId !== qFilter.accountId) return false;
+          if (qFilter.from && t.date < qFilter.from) return false;
+          if (qFilter.to && t.date > qFilter.to) return false;
+          return true;
+        }).sort((a, b) => b.date.localeCompare(a.date));
+      }, [state.transactions, qFilter]);
+
+      const qIncome = qResults.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+      const qExpense = qResults.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+
+      const maxBal = Math.max(...state.accounts.map(a => a.balance), 1);
+      const catForType = state.categories.filter(c => c.type === formType);
+
+      // --- INTEGRACIÓN GOOGLE DRIVE API ---
+      let tokenClient = useRef(null);
+
+      useEffect(() => {
+        // Inicializar gapi y gis una vez cargadas las scripts de Google
+        const loadGapiAndGis = () => {
+          if (typeof gapi !== 'undefined' && typeof google !== 'undefined') {
+            gapi.load('client', async () => {
+              await gapi.client.init({
+                apiKey: gdriveConfig.apiKey,
+                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+              });
+            });
+
+            if (gdriveConfig.clientId) {
+              tokenClient.current = google.accounts.oauth2.initTokenClient({
+                client_id: gdriveConfig.clientId,
+                scope: 'https://www.googleapis.com/auth/drive.file',
+                callback: async (resp) => {
+                  if (resp.error) {
+                    setSyncStatus("error");
+                    showToast("Error en autorización de Google: " + resp.error, "error");
+                    return;
+                  }
+                  setGdToken(resp.access_token);
+                  setSyncStatus("connected");
+                  showToast("¡Conectado exitosamente a Google Drive!");
+                  
+                  // Una vez conectado, buscar o crear el archivo de base de datos
+                  await findOrCreateDriveFile(resp.access_token);
+                },
+              });
+            }
+          } else {
+            // Reintentar en 1 segundo si aún no cargan
+            setTimeout(loadGapiAndGis, 1000);
+          }
+        };
+        loadGapiAndGis();
+      }, [gdriveConfig]);
+
+      // Conectarse a Google Drive (iniciar flujo OAuth)
+      const connectGoogleDrive = () => {
+        if (!gdriveConfig.clientId || !gdriveConfig.apiKey) {
+          setScreen("sync_settings");
+          showToast("Ingresa tu Client ID y API Key de Google para conectar", "warning");
+          return;
+        }
+        setSyncStatus("connecting");
+        if (tokenClient.current) {
+          // Solicitar token de acceso al usuario
+          tokenClient.current.requestAccessToken({ prompt: 'consent' });
+        } else {
+          setSyncStatus("error");
+          showToast("Error al inicializar cliente de Google. Revisa tus credenciales.", "error");
+        }
+      };
+
+      // Desconectar Google Drive
+      const disconnectGoogleDrive = () => {
+        setGdToken(null);
+        setGdFileId(null);
+        setSyncStatus("disconnected");
+        showToast("Desconectado de Google Drive", "warning");
+      };
+
+      // Buscar o crear el archivo 'mi_cartera_data.json' en Google Drive
+      const findOrCreateDriveFile = async (token) => {
+        try {
+          setSyncStatus("syncing");
+          gapi.client.setToken({ access_token: token });
+          
+          // Buscar archivo existente
+          const response = await gapi.client.drive.files.list({
+            q: "name = 'mi_cartera_data.json' and trashed = false",
+            fields: 'files(id, name)',
+            spaces: 'drive'
+          });
+
+          const files = response.result.files;
+          if (files && files.length > 0) {
+            // Archivo encontrado
+            const fileId = files[0].id;
+            setGdFileId(fileId);
+            
+            // Preguntar si quiere descargar los datos de la nube o subir los locales
+            const confirmImport = window.confirm("Se encontró una base de datos en tu Google Drive.\n\n¿Quieres CARGAR los datos desde la nube? (Esto reemplazará tus datos locales actuales).\n\nPresiona CANCELAR para sobreescribir la nube con tus datos locales.");
+            if (confirmImport) {
+              await loadDataFromDrive(fileId);
+            } else {
+              await uploadDataToDrive(fileId, state);
+            }
+          } else {
+            // No existe, crearlo nuevo con los datos locales actuales
+            await createDriveFile(state);
+          }
+        } catch (err) {
+          console.error(err);
+          setSyncStatus("error");
+          showToast("Error buscando el archivo en Drive", "error");
+        }
+      };
+
+      // Crear archivo por primera vez en Drive
+      const createDriveFile = async (dataToSave) => {
+        try {
+          setSyncStatus("syncing");
+          const metadata = {
+            name: 'mi_cartera_data.json',
+            mimeType: 'application/json'
+          };
+          
+          const boundary = '314159265358979323846';
+          const delimiter = "\r\n--" + boundary + "\r\n";
+          const close_delim = "\r\n--" + boundary + "--";
+
+          const body =
+              delimiter +
+              'Content-Type: application/json\r\n\r\n' +
+              JSON.stringify(metadata) +
+              delimiter +
+              'Content-Type: application/json\r\n\r\n' +
+              JSON.stringify(dataToSave) +
+              close_delim;
+
+          const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + gapi.client.getToken().access_token,
+              'Content-Type': 'multipart/related; boundary=' + boundary
+            },
+            body: body
+          });
+
+          const file = await response.json();
+          setGdFileId(file.id);
+          setSyncStatus("connected");
+          setLastSyncTime(new Date().toLocaleTimeString());
+          showToast("¡Base de datos creada con éxito en Google Drive!");
+        } catch (err) {
+          console.error(err);
+          setSyncStatus("error");
+          showToast("Error creando archivo en Drive", "error");
+        }
+      };
+
+      // Subir datos actuales (actualizar archivo en Drive)
+      const uploadDataToDrive = async (fileId, dataToSave) => {
+        try {
+          setSyncStatus("syncing");
+          const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': 'Bearer ' + gapi.client.getToken().access_token,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(dataToSave)
+          });
+
+          if (response.ok) {
+            setSyncStatus("connected");
+            setLastSyncTime(new Date().toLocaleTimeString());
+            showToast("✓ Datos sincronizados con Google Drive");
+          } else {
+            throw new Error("No se pudo actualizar el archivo");
+          }
+        } catch (err) {
+          console.error(err);
+          setSyncStatus("error");
+          showToast("Error de sincronización con la nube", "error");
+        }
+      };
+
+      // Cargar datos desde un archivo específico en Drive
+      const loadDataFromDrive = async (fileId) => {
+        try {
+          setSyncStatus("syncing");
+          const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+            headers: {
+              'Authorization': 'Bearer ' + gapi.client.getToken().access_token
+            }
+          });
+          const cloudData = await response.json();
+          
+          if (cloudData && cloudData.accounts) {
+            setState(cloudData);
+            setSyncStatus("connected");
+            setLastSyncTime(new Date().toLocaleTimeString());
+            showToast("✓ Datos cargados con éxito desde Google Drive");
+            setScreen("home");
+          } else {
+            throw new Error("Formato de datos inválido en la nube");
+          }
+        } catch (err) {
+          console.error(err);
+          setSyncStatus("error");
+          showToast("Error descargando datos desde Google Drive", "error");
+        }
+      };
+
+      // Auto-sincronización silenciosa en segundo plano al cambiar el estado
+      const autoSyncToDrive = async (updatedState) => {
+        if (!gdFileId || !gapi.client.getToken()) return;
+        try {
+          await fetch(`https://www.googleapis.com/upload/drive/v3/files/${gdFileId}?uploadType=media`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': 'Bearer ' + gapi.client.getToken().access_token,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(updatedState)
+          });
+          setLastSyncTime(new Date().toLocaleTimeString());
+        } catch (err) {
+          console.error("Auto-sync fallido:", err);
+        }
+      };
+
+      // --- RESPALDO MANUAL LOCAL (Alternativa Offline libre de fallas) ---
+      const exportLocalJSON = () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state, null, 2));
+        const downloadAnchor = document.createElement('a');
+        downloadAnchor.setAttribute("href", dataStr);
+        downloadAnchor.setAttribute("download", `mi_cartera_respaldo_${new Date().toISOString().split('T')[0]}.json`);
+        document.body.appendChild(downloadAnchor);
+        downloadAnchor.click();
+        downloadAnchor.remove();
+        showToast("Copia de seguridad local descargada");
+      };
+
+      const importLocalJSON = (e) => {
+        const fileReader = new FileReader();
+        fileReader.onload = event => {
+          try {
+            const importedState = JSON.parse(event.target.result);
+            if (importedState.accounts && importedState.categories) {
+              setState(importedState);
+              showToast("Respaldo restaurado exitosamente");
+              setScreen("home");
+              if (syncStatus === "connected") autoSyncToDrive(importedState);
+            } else {
+              showToast("El archivo de respaldo no es válido", "error");
+            }
+          } catch {
+            showToast("Error leyendo el archivo", "error");
+          }
+        };
+        fileReader.readAsText(e.target.files[0]);
+      };
+
+      return (
+        <div className="min-h-screen bg-[#0e1320] text-[#f1f5f9] flex flex-col max-w-md mx-auto relative border-x border-[#1e293b] shadow-2xl shadow-indigo-950/20">
+          
+          {/* TOAST SYSTEM */}
+          {toast && (
+            <div className={`fixed top-4 left-1/2 -translate-x-1/2 px-4 py-3 rounded-xl font-semibold z-[9999] text-sm shadow-xl flex items-center gap-2 border transition-all duration-300 transform scale-100 ${
+              toast.type === "error" ? "bg-rose-950/90 text-rose-300 border-rose-500/30" : 
+              toast.type === "warning" ? "bg-amber-950/90 text-amber-300 border-amber-500/30" :
+              "bg-emerald-950/90 text-emerald-300 border-emerald-500/30"
+            }`}>
+              {toast.type === "error" ? <i data-lucide="alert-circle" className="w-4 h-4 text-rose-400"></i> : <i data-lucide="check" className="w-4 h-4 text-emerald-400"></i>}
+              <span>{toast.msg}</span>
+            </div>
+          )}
+
+          {/* MENÚ LATERAL DESLIZABLE */}
+          {menuOpen && (
+            <div className="fixed inset-0 z-50 flex">
+              <div className="absolute inset-0 bg-black/60 backdrop-blur-xs transition-opacity" onClick={() => setMenuOpen(false)} />
+              <div className="relative w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col p-6 animate-slide-in">
+                <div className="flex items-center justify-between pb-6 border-b border-[#1e293b] mb-4">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-indigo-600/20 rounded-lg">
+                      <span className="text-xl">💳</span>
+                    </div>
+                    <span className="text-lg font-bold text-indigo-400">Mi Cartera Pro</span>
+                  </div>
+                  <button onClick={() => setMenuOpen(false)} className="text-[#94a3b8] hover:text-[#f1f5f9]">✕</button>
+                </div>
+                
+                {/* Indicador de Estado de Sincronización en Menú */}
+                <div className="bg-[#1a2336] p-3 rounded-xl mb-6 border border-[#27354f]">
+                  <div className="text-xs text-[#94a3b8] mb-1">Estado de Sincronización</div>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${
+                      syncStatus === "connected" ? "bg-emerald-400 animate-pulse" :
+                      syncStatus === "syncing" ? "bg-indigo-400 animate-spin" :
+                      syncStatus === "error" ? "bg-rose-400" : "bg-slate-500"
+                    }`} />
+                    <span className="text-sm font-semibold capitalize">
+                      {syncStatus === "connected" ? "Sincronizado" :
+                       syncStatus === "syncing" ? "Sincronizando..." :
+                       syncStatus === "connecting" ? "Conectando..." :
+                       syncStatus === "error" ? "Error de conexión" : "Nube Desconectada"}
+                    </span>
+                  </div>
+                  {lastSyncTime && (
+                    <div className="text-[10px] text-[#64748b] mt-1">Último cambio: {lastSyncTime}</div>
+                  )}
+                </div>
+
+                <div className="flex-1 space-y-1 overflow-y-auto">
+                  {[
+                    { label: "💳 Mis Cuentas", screen: "accounts", icon: "credit-card" },
+                    { label: "🔄 Transferencias", screen: "transfers", icon: "repeat" },
+                    { label: "🏷️ Categorías", screen: "categories", icon: "tags" },
+                    { label: "🔍 Consultas y Reportes", screen: "queries", icon: "search" },
+                    { label: "📦 Períodos Archivados", screen: "archive", icon: "archive" },
+                    { label: "📅 Cerrar Período (Mes)", screen: "period", icon: "calendar" },
+                    { label: "☁️ Sincronizar Google Drive", screen: "sync_settings", icon: "cloud-lightning" },
+                    { label: "❓ Ayuda e Instalación", screen: "help", icon: "help-circle" },
+                  ].map(item => (
+                    <button 
+                      key={item.screen} 
+                      onClick={() => openScreen(item.screen)}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left text-sm font-medium transition-colors ${
+                        screen === item.screen ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/20" : "text-[#94a3b8] hover:bg-slate-800/40 hover:text-[#f1f5f9]"
+                      }`}
+                    >
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="pt-4 border-t border-[#1e293b] text-center text-xs text-[#64748b]">
+                  Mi Cartera Pro v2.1 • Offline & Cloud
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* DESGLOSE DE SALDOS POR CUENTA MODAL */}
+          {showBreakdown && (
+            <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-xs">
+              <div className="w-full max-w-md bg-[#121824] rounded-t-3xl border-t border-[#1e293b] p-6 pb-8 animate-slide-up">
+                <div className="w-12 h-1 bg-slate-700 rounded-full mx-auto mb-6" />
+                <div className="text-center font-bold text-lg mb-6">💳 Desglose de Cuentas Activas</div>
+                
+                <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                  {state.accounts.map(a => (
+                    <div key={a.id} className="bg-[#1a2336] p-4 rounded-xl border border-[#27354f]">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="font-semibold text-slate-200">{a.name}</span>
+                        <span className="text-emerald-400 font-bold">{fmt(a.balance)}</span>
+                      </div>
+                      <div className="w-full bg-[#0e1320] rounded-full h-2">
+                        <div 
+                          className="bg-indigo-500 h-2 rounded-full transition-all duration-500" 
+                          style={{ width: `${Math.max(3, Math.min(100, (a.balance / maxBal) * 100))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {state.accounts.length === 0 && (
+                    <div className="text-center text-[#64748b] py-4">No tienes cuentas agregadas aún.</div>
+                  )}
+                </div>
+
+                <div className="flex justify-between items-center font-bold text-lg mt-6 pt-4 border-t border-[#1e293b]">
+                  <span className="text-slate-400">Patrimonio Total:</span>
+                  <span className="text-emerald-400 text-xl">{fmt(totalBalance)}</span>
+                </div>
+
+                <button 
+                  onClick={() => setShowBreakdown(false)}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl font-bold mt-6 transition-all"
+                >
+                  Listo
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* HEADER PRINCIPAL */}
+          <header className="sticky top-0 bg-[#0e1320]/90 backdrop-blur-md z-40 border-b border-[#1e293b] px-4 py-4 flex items-center justify-between">
+            {screen !== "home" ? (
+              <button onClick={() => setScreen("home")} className="p-2 hover:bg-slate-800/60 rounded-xl transition-all">
+                <span className="text-xl">←</span>
+              </button>
+            ) : (
+              <button onClick={() => setMenuOpen(true)} className="p-2 hover:bg-slate-800/60 rounded-xl transition-all">
+                <span className="text-xl">☰</span>
+              </button>
+            )}
+
+            <h1 className="font-bold text-base tracking-wide uppercase text-slate-200">
+              {screen === "home" ? "Mi Cartera" :
+               screen === "accounts" ? "Cuentas" :
+               screen === "categories" ? "Categorías" :
+               screen === "transfers" ? "Transferencias" :
+               screen === "queries" ? "Consultas & Filtros" :
+               screen === "period" ? "Corte del Período" :
+               screen === "archive" ? "Períodos Archivados" :
+               screen === "income" ? "Registrar Ingreso" :
+               screen === "expense" ? "Registrar Gasto" :
+               screen === "sync_settings" ? "Google Drive Sync" : "Ayuda de Instalación"}
+            </h1>
+
+            {/* Icono de Estado de Sincronización Rápida en Header */}
+            <button onClick={() => setScreen("sync_settings")} className="p-2 hover:bg-slate-800/60 rounded-xl transition-all relative">
+              <span className={`absolute top-1.5 right-1.5 w-2 h-2 rounded-full ${
+                syncStatus === "connected" ? "bg-emerald-400" :
+                syncStatus === "syncing" ? "bg-indigo-400 animate-pulse" : "bg-slate-600"
+              }`} />
+              <span className="text-lg">☁️</span>
+            </button>
+          </header>
+
+          {/* CONTENIDO PRINCIPAL */}
+          <main className="flex-1 pb-24 overflow-y-auto">
+
+            {/* PANTALLA: HOME */}
+            {screen === "home" && (
+              <div className="p-4 space-y-6">
+                
+                {/* TARJETA DE BALANCE PRINCIPAL */}
+                <div className="bg-gradient-to-br from-indigo-900 to-indigo-700 rounded-3xl p-6 text-white shadow-lg shadow-indigo-950/40 border border-indigo-500/20 relative overflow-hidden">
+                  <div className="absolute -right-10 -bottom-10 opacity-10 text-9xl">💰</div>
+                  <div className="text-indigo-200 text-xs font-semibold uppercase tracking-wider mb-1">Patrimonio Neto Total</div>
+                  <div className="text-3xl font-extrabold tracking-tight">{fmt(totalBalance)}</div>
+                  
+                  <div className="flex justify-between items-center mt-6 pt-4 border-t border-indigo-500/30">
+                    <button 
+                      onClick={() => setShowBreakdown(true)}
+                      className="text-xs bg-white/10 hover:bg-white/20 active:bg-white/30 transition-all px-4 py-2 rounded-xl flex items-center gap-1.5 font-medium"
+                    >
+                      <span>Ver cuentas</span> ➔
+                    </button>
+                    {syncStatus === "connected" ? (
+                      <span className="text-[10px] text-emerald-300 font-medium flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                        Sincronizado con Drive
+                      </span>
+                    ) : (
+                      <button 
+                        onClick={() => setScreen("sync_settings")} 
+                        className="text-[10px] bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-200 px-3 py-1 rounded-lg"
+                      >
+                        Conectar Nube
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* BOTONES DE TRANSACCIÓN DIRECTA */}
+                <div className="grid grid-cols-2 gap-4">
+                  <button 
+                    onClick={() => openScreen("income", "income")}
+                    className="bg-[#121c22] hover:bg-[#16272e] border border-emerald-500/20 rounded-2xl py-4 flex flex-col items-center justify-center gap-1 transition-all group active:scale-95"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-1 group-hover:scale-110 transition-transform">
+                      <span className="text-xl">↑</span>
+                    </div>
+                    <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Ingreso</span>
+                    <span className="text-xs text-emerald-400 font-medium">Registrar</span>
+                  </button>
+
+                  <button 
+                    onClick={() => openScreen("expense", "expense")}
+                    className="bg-[#1f161c] hover:bg-[#2e1d27] border border-rose-500/20 rounded-2xl py-4 flex flex-col items-center justify-center gap-1 transition-all group active:scale-95"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-400 mb-1 group-hover:scale-110 transition-transform">
+                      <span className="text-xl">↓</span>
+                    </div>
+                    <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Egreso</span>
+                    <span className="text-xs text-rose-400 font-medium">Registrar</span>
+                  </button>
+                </div>
+
+                {/* MOVIMIENTOS RECIENTES */}
+                <div>
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Últimos Movimientos</h3>
+                    <button onClick={() => setScreen("queries")} className="text-xs text-indigo-400 font-semibold">Ver todos</button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {recentTx.map(t => (
+                      <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-[#2a364f]">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${
+                            t.type === "income" ? "bg-emerald-500/10 text-emerald-400" :
+                            t.type === "transfer" ? "bg-blue-500/10 text-blue-400" : "bg-rose-500/10 text-rose-400"
+                          }`}>
+                            {t.type === "income" ? "📈" : t.type === "transfer" ? "⇄" : "📉"}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-sm text-slate-200">{t.categoryName}</div>
+                            <div className="text-[11px] text-slate-500">{t.accountName} • {t.date}</div>
+                            {t.note && <div className="text-xs text-[#94a3b8] italic mt-0.5">"{t.note}"</div>}
+                          </div>
+                        </div>
+
+                        <div className={`font-bold text-sm tracking-tight ${
+                          t.type === "income" ? "text-emerald-400" : 
+                          t.type === "transfer" ? "text-blue-400" : "text-rose-400"
+                        }`}>
+                          {t.type === "income" ? "+" : t.type === "transfer" ? "" : "-"}{fmt(t.amount)}
+                        </div>
+                      </div>
+                    ))}
+
+                    {recentTx.length === 0 && (
+                      <div className="bg-[#121824] border border-dashed border-[#1e293b] rounded-2xl p-8 text-center">
+                        <div className="text-2xl mb-2">💸</div>
+                        <p className="text-sm text-[#64748b]">Aún no registras movimientos en este mes.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ACCESO RÁPIDO A DRIVE */}
+                {syncStatus !== "connected" && (
+                  <div className="bg-[#121c2d] border border-blue-500/20 p-4 rounded-2xl flex items-center justify-between">
+                    <div>
+                      <h4 className="font-semibold text-xs text-blue-300 uppercase tracking-wider">¿Guardar datos en Google Drive?</h4>
+                      <p className="text-[11px] text-slate-400 mt-1">Conecta tu cuenta para sincronizar con tu PC.</p>
+                    </div>
+                    <button 
+                      onClick={() => setScreen("sync_settings")}
+                      className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all"
+                    >
+                      Conectar
+                    </button>
+                  </div>
+                )}
+
+              </div>
+            )}
+
+            {/* PANTALLA: FORMULARIO DE INGRESO / GASTO */}
+            {(screen === "income" || screen === "expense") && (
+              <div className="p-4">
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Monto *</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg font-bold text-slate-500">$</span>
+                      <input 
+                        type="number" 
+                        placeholder="0.00" 
+                        step="0.01"
+                        value={form.amount} 
+                        onChange={e => setForm({ ...form, amount: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3.5 pl-8 pr-4 text-white text-lg font-bold focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta origen *</label>
+                    <select 
+                      value={form.accountId} 
+                      onChange={e => setForm({ ...form, accountId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    >
+                      <option value="">— Selecciona una cuenta —</option>
+                      {state.accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Categoría *</label>
+                    <select 
+                      value={form.categoryId} 
+                      onChange={e => setForm({ ...form, categoryId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    >
+                      <option value="">— Selecciona categoría —</option>
+                      {catForType.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    {catForType.length === 0 && (
+                      <p className="text-xs text-amber-400 mt-1">⚠️ No hay categorías para este tipo de movimiento. Crea una primero en el menú.</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Nota (Opcional)</label>
+                    <input 
+                      type="text" 
+                      placeholder="Ej. Compra semanal de despensa" 
+                      value={form.note} 
+                      onChange={e => setForm({ ...form, note: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Fecha</label>
+                    <input 
+                      type="date" 
+                      value={form.date} 
+                      onChange={e => setForm({ ...form, date: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <button 
+                    onClick={submitTransaction}
+                    className={`w-full font-bold py-4 rounded-xl mt-4 transition-all shadow-lg text-sm uppercase tracking-wider ${
+                      formType === "income" 
+                        ? "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950/20 text-white" 
+                        : "bg-rose-600 hover:bg-rose-500 shadow-rose-950/20 text-white"
+                    }`}
+                  >
+                    {formType === "income" ? "✓ Registrar Ingreso" : "✓ Registrar Egreso"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* PANTALLA: GESTIONAR CUENTAS */}
+            {screen === "accounts" && (
+              <div className="p-4 space-y-6">
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <h3 className="font-bold text-sm uppercase text-slate-400 tracking-wider">
+                    {editAcc ? "✏️ Editar cuenta existente" : "💳 Agregar nueva cuenta"}
+                  </h3>
+                  
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Nombre de la Cuenta</label>
+                    <input 
+                      type="text" 
+                      placeholder="Ej. Tarjeta Banamex, Efectivo personal" 
+                      value={accForm.name} 
+                      onChange={e => setAccForm({ ...accForm, name: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                      Saldo {editAcc ? "actual" : "inicial"}
+                    </label>
+                    <input 
+                      type="number" 
+                      placeholder="0.00" 
+                      value={accForm.balance} 
+                      onChange={e => setAccForm({ ...accForm, balance: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <button 
+                      onClick={submitAccount}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-3.5 rounded-xl font-bold text-sm transition-all shadow-lg shadow-indigo-950/20"
+                    >
+                      {editAcc ? "Guardar" : "Agregar Cuenta"}
+                    </button>
+                    {editAcc && (
+                      <button 
+                        onClick={() => { setEditAcc(null); setAccForm({ name: "", balance: "" }); }}
+                        className="bg-slate-700 hover:bg-slate-600 px-5 py-3.5 rounded-xl font-semibold text-sm transition-all"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Cuentas creadas</h4>
+                  {state.accounts.map(a => (
+                    <div key={a.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-sm text-slate-200">{a.name}</div>
+                        <div className="text-emerald-400 font-bold text-sm mt-0.5">{fmt(a.balance)}</div>
+                      </div>
+                      <div className="flex gap-1">
+                        <button 
+                          onClick={() => { setEditAcc(a); setAccForm({ name: a.name, balance: a.balance }); }}
+                          className="p-2.5 bg-blue-500/10 hover:bg-blue-500/20 rounded-xl text-blue-400 text-sm transition-all"
+                          title="Editar cuenta"
+                        >
+                          ✏️
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if(window.confirm(`¿Estás seguro de eliminar "${a.name}"? Se borrarán todos sus movimientos asociados.`)) {
+                              deleteAccount(a.id);
+                            }
+                          }}
+                          className="p-2.5 bg-rose-500/10 hover:bg-rose-500/20 rounded-xl text-rose-400 text-sm transition-all"
+                          title="Eliminar cuenta"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {state.accounts.length === 0 && (
+                    <p className="text-center text-[#64748b] text-sm py-4">No tienes cuentas. Agrega una arriba.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* PANTALLA: GESTIONAR CATEGORÍAS */}
+            {screen === "categories" && (
+              <div className="p-4 space-y-6">
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <h3 className="font-bold text-sm uppercase text-slate-400 tracking-wider">Nueva categoría</h3>
+                  
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Nombre</label>
+                    <input 
+                      type="text" 
+                      placeholder="Ej. Supermercado, Gimnasio, Renta" 
+                      value={catForm.name} 
+                      onChange={e => setCatForm({ ...catForm, name: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Tipo de flujo</label>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => setCatForm({ ...catForm, type: "expense" })}
+                        className={`flex-1 py-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all ${
+                          catForm.type === "expense" 
+                            ? "bg-rose-500/10 text-rose-400 border-rose-500/40" 
+                            : "border-[#1e293b] text-slate-400 hover:bg-slate-800/40"
+                        }`}
+                      >
+                        ↓ Gasto
+                      </button>
+                      <button 
+                        onClick={() => setCatForm({ ...catForm, type: "income" })}
+                        className={`flex-1 py-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all ${
+                          catForm.type === "income" 
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/40" 
+                            : "border-[#1e293b] text-slate-400 hover:bg-slate-800/40"
+                        }`}
+                      >
+                        ↑ Ingreso
+                      </button>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={submitCategory}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 py-3.5 rounded-xl font-bold text-sm transition-all shadow-lg"
+                  >
+                    Agregar categoría
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* GASTOS */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-rose-400 mb-2">Categorías de Gasto</h4>
+                    <div className="space-y-1.5">
+                      {state.categories.filter(c => c.type === "expense").map(c => (
+                        <div key={c.id} className="bg-[#121824] border border-[#1e293b] px-3.5 py-2 rounded-xl flex items-center justify-between text-sm">
+                          <span className="font-medium text-slate-300">{c.name}</span>
+                          <button 
+                            onClick={() => deleteCategory(c.id)}
+                            className="text-slate-500 hover:text-rose-400 p-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* INGRESOS */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2">Categorías de Ingreso</h4>
+                    <div className="space-y-1.5">
+                      {state.categories.filter(c => c.type === "income").map(c => (
+                        <div key={c.id} className="bg-[#121824] border border-[#1e293b] px-3.5 py-2 rounded-xl flex items-center justify-between text-sm">
+                          <span className="font-medium text-slate-300">{c.name}</span>
+                          <button 
+                            onClick={() => deleteCategory(c.id)}
+                            className="text-slate-500 hover:text-rose-400 p-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PANTALLA: NUEVA TRANSFERENCIA */}
+            {screen === "transfers" && (
+              <div className="p-4">
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta origen</label>
+                    <select 
+                      value={trfForm.fromId} 
+                      onChange={e => setTrfForm({ ...trfForm, fromId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 outline-none"
+                    >
+                      <option value="">— Selecciona origen —</option>
+                      {state.accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta destino</label>
+                    <select 
+                      value={trfForm.toId} 
+                      onChange={e => setTrfForm({ ...trfForm, toId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 outline-none"
+                    >
+                      <option value="">— Selecciona destino —</option>
+                      {state.accounts.filter(a => a.id !== trfForm.fromId).map(a => (
+                        <option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Monto a Transferir</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
+                      <input 
+                        type="number" 
+                        placeholder="0.00" 
+                        value={trfForm.amount} 
+                        onChange={e => setTrfForm({ ...trfForm, amount: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 pl-8 pr-4 text-white text-base font-bold focus:border-indigo-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Fecha de la transacción</label>
+                    <input 
+                      type="date" 
+                      value={trfForm.date} 
+                      onChange={e => setTrfForm({ ...trfForm, date: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3 px-4 text-white text-sm focus:border-indigo-500 outline-none"
+                    />
+                  </div>
+
+                  <button 
+                    onClick={submitTransfer}
+                    className="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-xl font-bold uppercase tracking-wider text-xs text-white transition-all shadow-lg"
+                  >
+                    🔄 Confirmar Transferencia
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* PANTALLA: CONSULTAS Y FILTROS */}
+            {screen === "queries" && (
+              <div className="p-4 space-y-4">
+                
+                {/* FILTROS CARD */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-5 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block">Categoría</label>
+                      <select 
+                        value={qFilter.categoryId} 
+                        onChange={e => setQFilter({ ...qFilter, categoryId: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-lg py-2 px-3 text-xs text-white outline-none"
+                      >
+                        <option value="">Todas</option>
+                        {state.categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block">Cuenta</label>
+                      <select 
+                        value={qFilter.accountId} 
+                        onChange={e => setQFilter({ ...qFilter, accountId: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-lg py-2 px-3 text-xs text-white outline-none"
+                      >
+                        <option value="">Todas</option>
+                        {state.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block">Desde</label>
+                      <input 
+                        type="date" 
+                        value={qFilter.from} 
+                        onChange={e => setQFilter({ ...qFilter, from: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-lg py-2 px-3 text-xs text-white outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block">Hasta</label>
+                      <input 
+                        type="date" 
+                        value={qFilter.to} 
+                        onChange={e => setQFilter({ ...qFilter, to: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-lg py-2 px-3 text-xs text-white outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => setQFilter({ categoryId: "", accountId: "", from: "", to: "" })}
+                    className="w-full bg-slate-800 hover:bg-slate-700 py-2 rounded-lg text-xs font-semibold text-slate-300 transition-all"
+                  >
+                    Borrar Filtros
+                  </button>
+                </div>
+
+                {/* RESUMEN DE FILTRADO */}
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-[#121c17] border border-emerald-500/10 p-3 rounded-2xl">
+                    <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Ingresos</div>
+                    <div className="text-sm font-bold text-emerald-400 mt-1">{fmt(qIncome)}</div>
+                  </div>
+                  
+                  <div className="bg-[#201416] border border-rose-500/10 p-3 rounded-2xl">
+                    <div className="text-[10px] font-bold text-rose-400 uppercase tracking-wider">Gastos</div>
+                    <div className="text-sm font-bold text-rose-400 mt-1">{fmt(qExpense)}</div>
+                  </div>
+
+                  <div className="bg-[#121c2c] border border-blue-500/10 p-3 rounded-2xl">
+                    <div className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Neto</div>
+                    <div className="text-sm font-bold text-blue-400 mt-1">{fmt(qIncome - qExpense)}</div>
+                  </div>
+                </div>
+
+                {/* LISTA DE RESULTADOS */}
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-500 font-semibold">{qResults.length} movimiento(s) encontrado(s)</div>
+                  
+                  {qResults.map(t => (
+                    <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-sm text-slate-200">{t.categoryName}</div>
+                        <div className="text-[11px] text-slate-500">{t.accountName} • {t.date}</div>
+                        {t.note && <div className="text-xs text-slate-400 italic mt-1">"{t.note}"</div>}
+                      </div>
+                      
+                      <div className={`font-bold text-sm ${t.type === "income" ? "text-emerald-400" : "text-rose-400"}`}>
+                        {t.type === "income" ? "+" : "-"}{fmt(t.amount)}
+                      </div>
+                    </div>
+                  ))}
+
+                  {qResults.length === 0 && (
+                    <div className="text-center text-[#64748b] text-sm py-8 bg-[#121824] rounded-2xl border border-dashed border-[#1e293b]">
+                      No hay transacciones que coincidan con los filtros.
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
+
+            {/* PANTALLA: CORTES DE PERÍODO / MES */}
+            {screen === "period" && (
+              <div className="p-4">
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 text-center space-y-4">
+                  <div className="text-5xl my-4">📅</div>
+                  <h2 className="font-extrabold text-xl text-slate-200">Inicio de Nuevo Período</h2>
+                  
+                  <p className="text-sm text-slate-400 leading-relaxed">
+                    Esto guardará de forma permanente y archivará todos los movimientos del período actual para comenzar el mes desde cero.
+                  </p>
+                  
+                  <p className="text-xs text-slate-400">
+                     Los saldos actuales de tus cuentas <span className="font-bold text-emerald-400">se mantendrán intactos</span> como balances iniciales para el nuevo período.
+                  </p>
+
+                  <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 text-left p-4 rounded-2xl space-y-1">
+                    <div className="text-xs font-bold uppercase">Estado actual a archivar:</div>
+                    <div className="text-xs">• Movimientos registrados: <span className="font-bold text-white">{state.transactions.length}</span></div>
+                    <div className="text-xs">• Período activo desde: <span className="font-bold text-white">{state.currentPeriodStart}</span></div>
+                  </div>
+
+                  {!periodConfirm ? (
+                    <button 
+                      onClick={() => setPeriodConfirm(true)}
+                      className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-4 rounded-xl transition-all shadow-lg"
+                    >
+                      Realizar Corte Mensual
+                    </button>
+                  ) : (
+                    <div className="space-y-3 pt-2">
+                      <div className="text-xs font-semibold text-rose-400">⚠️ ¿Confirmas realizar el cierre de mes? No podrás agregar nuevos movimientos a este período.</div>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={doMonthEnd}
+                          className="flex-1 bg-rose-600 hover:bg-rose-500 text-white py-3.5 rounded-xl font-bold text-xs uppercase"
+                        >
+                          Sí, realizar corte
+                        </button>
+                        <button 
+                          onClick={() => setPeriodConfirm(false)}
+                          className="bg-slate-700 hover:bg-slate-600 text-slate-300 px-6 py-3.5 rounded-xl font-semibold text-xs"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* PANTALLA: ARCHIVO DE PERÍODOS */}
+            {screen === "archive" && (
+              <div className="p-4 space-y-4">
+                {state.archivedPeriods.length === 0 && (
+                  <div className="text-center text-slate-500 py-12 bg-[#121824] rounded-2xl border border-dashed border-[#1e293b]">
+                    <div className="text-4xl mb-3">📦</div>
+                    <p className="text-sm">No tienes períodos archivados todavía.</p>
+                  </div>
+                )}
+
+                {[...state.archivedPeriods].reverse().map(p => {
+                  const inc = p.transactions.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+                  const exp = p.transactions.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+                  
+                  return (
+                    <div key={p.id} className="bg-[#121824] border border-[#1e293b] rounded-3xl p-5 space-y-4">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h4 className="font-extrabold text-base text-indigo-400 capitalize">{p.label}</h4>
+                          <span className="text-[10px] text-slate-500 block mt-0.5">{p.start} ➔ {p.end}</span>
+                        </div>
+                        <span className="text-[11px] bg-slate-800 text-slate-400 px-3 py-1 rounded-full font-semibold">
+                          {p.transactions.length} movs
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center pt-2 border-t border-[#1e293b]">
+                        <div>
+                          <div className="text-[9px] font-bold text-emerald-400 uppercase">Ingresos</div>
+                          <div className="text-xs font-extrabold text-emerald-400 mt-0.5">{fmt(inc)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] font-bold text-rose-400 uppercase">Gastos</div>
+                          <div className="text-xs font-extrabold text-rose-400 mt-0.5">{fmt(exp)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] font-bold text-blue-400 uppercase">Balance</div>
+                          <div className="text-xs font-extrabold text-blue-400 mt-0.5">{fmt(inc - exp)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* PANTALLA: AJUSTES DE SINCRO (GOOGLE DRIVE) */}
+            {screen === "sync_settings" && (
+              <div className="p-4 space-y-6">
+                
+                {/* TARJETA DE ESTADO ACTUAL */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold text-base text-slate-200">Sincronización en la Nube</h3>
+                    <span className="text-2xl">☁️</span>
+                  </div>
+
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Al habilitar la sincronización, tus datos se guardarán de forma segura en tu propio Google Drive en un archivo invisible llamado <code className="text-indigo-400">mi_cartera_data.json</code>.
+                  </p>
+
+                  <div className="p-4 rounded-2xl bg-[#0a0f19] border border-[#1e293b]">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-3.5 h-3.5 rounded-full ${
+                        syncStatus === "connected" ? "bg-emerald-400 animate-pulse" :
+                        syncStatus === "syncing" ? "bg-indigo-400" :
+                        syncStatus === "error" ? "bg-rose-400" : "bg-slate-600"
+                      }`} />
+                      <div>
+                        <div className="text-xs font-bold text-slate-300">
+                          {syncStatus === "connected" ? "Conectado a Google Drive" :
+                           syncStatus === "syncing" ? "Sincronizando Archivos..." :
+                           syncStatus === "connecting" ? "Autorizando Cuenta..." :
+                           syncStatus === "error" ? "Error en la Conexión" : "Desconectado de la Nube"}
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-0.5">
+                          {lastSyncTime ? `Última sincronización realizada a las ${lastSyncTime}` : "No se ha sincronizado en esta sesión"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    {syncStatus === "connected" ? (
+                      <>
+                        <button 
+                          onClick={() => uploadDataToDrive(gdFileId, state)}
+                          className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-3.5 rounded-xl font-bold text-xs uppercase transition-all"
+                        >
+                          Sincronizar Ahora
+                        </button>
+                        <button 
+                          onClick={disconnectGoogleDrive}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 rounded-xl font-semibold text-xs"
+                        >
+                          Desconectar
+                        </button>
+                      </>
+                    ) : (
+                      <button 
+                        onClick={connectGoogleDrive}
+                        className="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-xl font-bold text-xs uppercase tracking-wider text-white transition-all shadow-lg"
+                      >
+                        ⚡ Conectar Google Drive
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* CREDIENCIALES DE DESARROLLADOR */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <div className="flex justify-between items-center">
+                    <h4 className="font-bold text-xs text-slate-400 uppercase tracking-wider">Credenciales de API de Google</h4>
+                    <button 
+                      onClick={() => setScreen("help")}
+                      className="text-xs text-indigo-400 font-semibold"
+                    >
+                      ¿Cómo obtenerlas?
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400">
+                    Por seguridad, debes ingresar tus propias credenciales de Google Developer para que la aplicación local pueda comunicarse directamente desde tu PC con tu Drive.
+                  </p>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Google Client ID</label>
+                      <input 
+                        type="password" 
+                        placeholder="Ingresa tu Client ID (.apps.googleusercontent.com)" 
+                        value={gdriveConfig.clientId}
+                        onChange={e => setGdriveConfig({ ...gdriveConfig, clientId: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2.5 px-4 text-xs text-white outline-none focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Google API Key</label>
+                      <input 
+                        type="password" 
+                        placeholder="Ingresa tu API Key de Google" 
+                        value={gdriveConfig.apiKey}
+                        onChange={e => setGdriveConfig({ ...gdriveConfig, apiKey: e.target.value })}
+                        className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2.5 px-4 text-xs text-white outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => {
+                      localStorage.setItem("gdrive_config", JSON.stringify(gdriveConfig));
+                      showToast("Credenciales de Google guardadas localmente");
+                    }}
+                    className="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-xl text-xs font-bold text-slate-200 transition-all"
+                  >
+                    Guardar Credenciales
+                  </button>
+                </div>
+
+                {/* RESPALDO TOTALMENTE OFFLINE */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <h4 className="font-bold text-xs text-[#94a3b8] uppercase tracking-wider">Respaldos Manuales Locales (100% Offline)</h4>
+                  <p className="text-[11px] text-slate-400">
+                    Si no deseas configurar Google Drive, puedes descargar tus datos en tu PC y cargarlos después cuando gustes. ¡Totalmente compatible!
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      onClick={exportLocalJSON}
+                      className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 py-3 rounded-xl text-xs font-bold transition-all"
+                    >
+                      💾 Exportar Backup
+                    </button>
+                    
+                    <label className="bg-slate-800 hover:bg-slate-700 text-slate-300 py-3 rounded-xl text-xs font-bold text-center cursor-pointer block border border-slate-700 transition-all">
+                      📁 Importar Backup
+                      <input 
+                        type="file" 
+                        accept=".json" 
+                        onChange={importLocalJSON}
+                        className="hidden" 
+                      />
+                    </label>
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* PANTALLA: AYUDA E INSTALACIÓN */}
+            {screen === "help" && (
+              <div className="p-4 space-y-6">
+                
+                {/* GUÍA DE ACCESO DIRECTO ESCRITORIO */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <h3 className="font-bold text-base text-slate-200 flex items-center gap-2">
+                    🖥️ Crear acceso directo en tu Escritorio (PC)
+                  </h3>
+
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Puedes instalar este archivo para usarlo como si fuera un programa nativo de Windows o Mac sin necesidad de abrir el navegador manualmente:
+                  </p>
+
+                  <ol className="list-decimal pl-4 space-y-2 text-xs text-slate-300">
+                    <li>Primero, guarda esta página en tu PC haciendo clic derecho y seleccionando <strong>Guardar página como...</strong> (nombre: <code className="text-indigo-400">index.html</code>).</li>
+                    <li>Abre ese archivo guardado con tu navegador habitual (<strong>Google Chrome</strong> o <strong>Microsoft Edge</strong>).</li>
+                    <li>En el menú de tres puntos de la esquina superior derecha, ve a:
+                      <ul className="list-disc pl-4 mt-1 space-y-1 text-slate-400">
+                        <li><strong>Google Chrome:</strong> Guardar y compartir ➔ <strong className="text-white">Instalar esta página como aplicación</strong>.</li>
+                        <li><strong>Microsoft Edge:</strong> Aplicaciones ➔ <strong className="text-white">Instalar este sitio como una aplicación</strong>.</li>
+                      </ul>
+                    </li>
+                    <li>¡Listo! Se creará un acceso directo precioso en tu escritorio y barra de tareas que se iniciará inmediatamente en su propia pantalla de forma independiente.</li>
+                  </ol>
+                </div>
+
+                {/* GUÍA DE CONFIGURACIÓN GOOGLE CLOUD */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
+                  <h3 className="font-bold text-base text-slate-200 flex items-center gap-2">
+                    🔑 Cómo configurar la API de Google Drive gratis (3 Minutos)
+                  </h3>
+
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Para que la app de tu PC se conecte de forma privada a tu propio espacio de Google Drive, sigue estos breves pasos:
+                  </p>
+
+                  <ul className="space-y-3 text-xs text-slate-300">
+                    <li className="flex gap-2">
+                      <span className="font-bold text-indigo-400">1.</span>
+                      <span>Ingresa a <a href="https://console.cloud.google.com/" target="_blank" className="text-indigo-400 underline">Google Cloud Console</a> y crea un nuevo proyecto rápido.</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold text-indigo-400">2.</span>
+                      <span>En el buscador de arriba busca <strong className="text-white">"Google Drive API"</strong> y haz clic en el botón <strong className="text-emerald-400">Habilitar (Enable)</strong>.</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold text-indigo-400">3.</span>
+                      <span>Ve a la pestaña de <strong className="text-white">Pantalla de consentimiento de OAuth</strong>, selecciona tipo "Externo", escribe un nombre de app y tu correo de contacto (los demás campos déjalos vacíos), y agrega tu propio correo como <strong className="text-white">Usuario de prueba (Test user)</strong>.</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold text-indigo-400">4.</span>
+                      <span>Ve a <strong className="text-white">Credenciales</strong>, haz clic en <strong className="text-indigo-400">Crear credenciales</strong>:
+                        <ul className="list-disc pl-4 mt-1.5 space-y-1 text-slate-400">
+                          <li><strong>Clave de API (API Key):</strong> Cópiala y pégala en la pestaña de sincronización de la app.</li>
+                          <li><strong>ID de cliente de OAuth (Client ID):</strong> Elige "Aplicación web". En <em>Orígenes de JavaScript autorizados</em> agrega <code className="text-white">http://localhost</code> y si usas algún host agrega la URL. Copia el ID generado y pégalo en la app.</li>
+                        </ul>
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+              </div>
+            )}
+
+          </main>
+
+          {/* MENÚ DE NAVEGACIÓN INFERIOR (ESTILO APP NATIVA) */}
+          <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#0e1320]/90 backdrop-blur-md border-t border-[#1e293b] grid grid-cols-5 py-2.5 px-2 z-40">
+            {[
+              { label: "Inicio", icon: "🏠", screen: "home" },
+              { label: "Cuentas", icon: "💳", screen: "accounts" },
+              { label: "Consultas", icon: "🔍", screen: "queries" },
+              { label: "Drive", icon: "☁️", screen: "sync_settings" },
+              { label: "Ayuda", icon: "❓", screen: "help" }
+            ].map(tab => (
+              <button 
+                key={tab.screen}
+                onClick={() => setScreen(tab.screen)}
+                className="flex flex-col items-center justify-center transition-all active:scale-90"
+              >
+                <span className="text-lg">{tab.icon}</span>
+                <span className={`text-[10px] font-semibold mt-0.5 ${
+                  screen === tab.screen ? "text-indigo-400" : "text-[#64748b]"
+                }`}>
+                  {tab.label}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
