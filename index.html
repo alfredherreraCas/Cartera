@@ -550,7 +550,7 @@
               </table>
               <script>
                 window.onload = function() { window.print(); }
-              </script>
+              <\/script>
             </body>
           </html>
         `);
@@ -801,7 +801,7 @@
               toast.type === "warning" ? "bg-amber-950/90 text-amber-300 border-amber-500/30" :
               "bg-emerald-950/90 text-emerald-300 border-emerald-500/30"
             }`}>
-              {toast.type === "error" ? <i data-lucide="alert-circle" className="w-4 h-4 text-rose-400"></i> : <i data-lucide="check" className="w-4 h-4 text-emerald-400"></i>}
+              {toast.type === "error" ? <span className="text-rose-400">⚠️</span> : <span className="text-emerald-400">✓</span>}
               <span>{toast.msg}</span>
             </div>
           )}
@@ -844,14 +844,14 @@
 
                 <div className="flex-1 space-y-1 overflow-y-auto">
                   {[
-                    { label: "💳 Mis Cuentas", screen: "accounts", icon: "credit-card" },
-                    { label: "🔄 Transferencias", screen: "transfers", icon: "repeat" },
-                    { label: "🏷️ Categorías", screen: "categories", icon: "tags" },
-                    { label: "🔍 Consultas y Reportes", screen: "queries", icon: "search" },
-                    { label: "📦 Períodos Archivados", screen: "archive", icon: "archive" },
-                    { label: "📅 Cerrar Período (Mes)", screen: "period", icon: "calendar" },
-                    { label: "☁️ Sincronizar Google Drive", screen: "sync_settings", icon: "cloud-lightning" },
-                    { label: "❓ Ayuda e Instalación", screen: "help", icon: "help-circle" },
+                    { label: "💳 Mis Cuentas", screen: "accounts" },
+                    { label: "🔄 Transferencias", screen: "transfers" },
+                    { label: "🏷️ Categorías", screen: "categories" },
+                    { label: "🔍 Consultas y Reportes", screen: "queries" },
+                    { label: "📦 Períodos Archivados", screen: "archive" },
+                    { label: "📅 Cerrar Período (Mes)", screen: "period" },
+                    { label: "☁️ Sincronizar Google Drive", screen: "sync_settings" },
+                    { label: "❓ Ayuda e Instalación", screen: "help" },
                   ].map(item => (
                     <button 
                       key={item.screen} 
@@ -977,7 +977,7 @@
                     <div className="text-[10px] text-slate-400 mt-1">(Cuentas débito/efectivo menos deudas de crédito)</div>
                   </div>
 
-                  {/* NUEVO RUBRO: DISPONIBLE EN TARJETAS DE CRÉDITO */}
+                  {/* RUBRO: DISPONIBLE EN TARJETAS DE CRÉDITO */}
                   <div className="bg-[#121824]/80 p-3 rounded-2xl border border-slate-700/30 flex items-center justify-between">
                     <div>
                       <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Disponible en Tarjetas</span>
@@ -1182,7 +1182,7 @@
               </div>
             )}
 
-            {/* PANTALLA: GESTIONAR CUENTAS (ACTUALIZADA CON TARJETAS DE CRÉDITO) */}
+            {/* PANTALLA: GESTIONAR CUENTAS */}
             {screen === "accounts" && (
               <div className="p-4 space-y-6">
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
@@ -1537,7 +1537,7 @@
               </div>
             )}
 
-            {/* PANTALLA: CONSULTAS Y FILTROS (ACTUALIZADA CON REPORTES) */}
+            {/* PANTALLA: CONSULTAS Y FILTROS */}
             {screen === "queries" && (
               <div className="p-4 space-y-4">
                 
