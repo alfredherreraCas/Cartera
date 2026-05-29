@@ -680,6 +680,7 @@
         }
       }
 
+      // Manejar el teclado del NIP en pantalla
       function handleNipInputClick(num) {
         if (nipInput.length < 4) {
           const nextVal = nipInput + num;
@@ -1392,7 +1393,7 @@
                     title={hideAmounts ? "Mostrar saldos" : "Ocultar saldos"}
                   >
                     {hideAmounts ? (
-                      <span className="text-lg">👁️‍cl</span> 
+                      <span className="text-lg">🙈</span> 
                     ) : (
                       <span className="text-lg">👁️</span>
                     )}
@@ -1564,7 +1565,7 @@
               </div>
             )}
 
-            {/* PANTALLA: GESTIONAR CUENTAS (CON ADICIÓN DE DÍA DE PAGO Y PRÉSTAMOS) */}
+            {/* PANTALLA: GESTIONAR CUENTAS */}
             {screen === "accounts" && (
               <div className="p-4 space-y-6">
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
@@ -1776,7 +1777,7 @@
               </div>
             )}
 
-            {/* PANTALLA: CALENDARIO DE PAGOS (VENCIMIENTOS Y PAGOS AUTOMÁTICOS) */}
+            {/* PANTALLA: CALENDARIO DE PAGOS */}
             {screen === "payments" && (
               <div className="p-4 space-y-6">
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
@@ -1855,7 +1856,6 @@
               </div>
             )}
 
-            {}
             {/* PANTALLA: PRESUPUESTOS Y GASTOS RECURRENTES */}
             {screen === "budgets" && (
               <div className="p-4 space-y-6">
@@ -1925,7 +1925,7 @@
                   </div>
                 </div>
 
-                {/* GASTOS RECURRENTES (NETFLIX, RENTA, ETC.) */}
+                {/* GASTOS RECURRENTES */}
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
                   <h3 className="font-bold text-sm uppercase text-slate-400 tracking-wider">🔄 Gastos Recurrentes</h3>
                   <p className="text-xs text-slate-400">Crea plantillas para registrar gastos recurrentes en 1 clic.</p>
@@ -2010,7 +2010,6 @@
               </div>
             )}
 
-            {}
             {/* PANTALLA: SEGURIDAD Y CONFIGURACIÓN DE NIP */}
             {screen === "lock_settings" && (
               <div className="p-4">
@@ -2059,7 +2058,7 @@
               </div>
             )}
 
-            {/* PANTALLA: CORTES DE PERÍODO (MENSUAL / QUINCENAL) */}
+            {/* PANTALLA: CORTES DE PERÍODO */}
             {screen === "period" && (
               <div className="p-4">
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 text-center space-y-4">
@@ -2357,7 +2356,6 @@
               </div>
             )}
 
-            {}
             {/* PANTALLA: CONSULTAS Y FILTROS */}
             {screen === "queries" && (
               <div className="p-4 space-y-4">
@@ -2536,7 +2534,6 @@
 
           </main>
 
-          {}
           {/* MENÚ DE NAVEGACIÓN INFERIOR CON PESTAÑA DE PAGOS */}
           <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#0e1320]/95 backdrop-blur-md border-t border-[#1e293b] grid grid-cols-5 py-2.5 px-2 z-40">
             {[
