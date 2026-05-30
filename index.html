@@ -444,7 +444,7 @@
       }
 
       function handleSaveEditedTx() {
-        if (!editingTx.categoryId || !editingTx.amount) {
+        if (!editingTx.accountId || !editingTx.categoryId || !editingTx.amount) {
           return showToast("Faltan datos obligatorios", "error");
         }
         
@@ -454,15 +454,15 @@
         const newAmount = parseFloat(editingTx.amount);
         if (isNaN(newAmount) || newAmount <= 0) return showToast("Monto inválido", "error");
 
-        const amtDifference = newAmount - originalTx.amount;
+        let updatedAccounts = [...state.accounts];
 
-        // Actualizamos las cuentas asociadas basándonos en la diferencia de montos
-        const updatedAccounts = state.accounts.map(a => {
+        // 1. REVERTIR EL IMPACTO ORIGINAL en la cuenta original
+        updatedAccounts = updatedAccounts.map(a => {
           if (a.id === originalTx.accountId) {
             if (a.isCreditCard || a.isLoan) {
-              // Si es egreso (gasto), aumentar monto incrementa la deuda. Si es ingreso, aumentar monto reduce la deuda.
+              // Revertir: Si fue gasto (expense), restamos el monto original de la deuda. Si fue ingreso (income), lo sumamos.
               const isExpense = originalTx.type === "expense";
-              const debtAdj = isExpense ? amtDifference : -amtDifference;
+              const debtAdj = isExpense ? -originalTx.amount : originalTx.amount;
               const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) + debtAdj);
               const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
               return {
@@ -472,23 +472,71 @@
                 balance: -newDebt
               };
             } else {
-              // Cuenta de débito estándar
-              const isIncome = originalTx.type === "income";
-              const balAdj = isIncome ? amtDifference : -amtDifference;
+              // Revertir en cuenta de débito estándar
+              const isExpense = originalTx.type === "expense";
+              const balAdj = isExpense ? originalTx.amount : -originalTx.amount;
               return {
                 ...a,
-                balance: a.balance + balAdj
+                balance: (parseFloat(a.balance) || 0) + balAdj
               };
             }
           }
           return a;
         });
 
+        // 2. VALIDAR si la nueva cuenta tiene fondos o límite suficiente (solo si el tipo es un egreso/gasto)
+        const targetAcc = updatedAccounts.find(a => a.id === editingTx.accountId);
+        if (!targetAcc) return showToast("La cuenta destino seleccionada no existe", "error");
+
+        if (originalTx.type === "expense") {
+          if (targetAcc.isCreditCard || targetAcc.isLoan) {
+            if (targetAcc.availableLimit < newAmount) {
+              return showToast("Límite de crédito disponible insuficiente en la cuenta seleccionada", "error");
+            }
+          } else {
+            if (targetAcc.balance < newAmount) {
+              return showToast("Saldo de débito insuficiente en la cuenta seleccionada", "error");
+            }
+          }
+        }
+
+        // 3. APLICAR EL NUEVO IMPACTO en la cuenta seleccionada
+        updatedAccounts = updatedAccounts.map(a => {
+          if (a.id === editingTx.accountId) {
+            if (a.isCreditCard || a.isLoan) {
+              // Aplicar: Gasto incrementa la deuda. Ingreso reduce la deuda.
+              const isExpense = originalTx.type === "expense";
+              const debtAdj = isExpense ? newAmount : -newAmount;
+              const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) + debtAdj);
+              const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+              return {
+                ...a,
+                cardDebt: newDebt,
+                availableLimit: newAvailable,
+                balance: -newDebt
+              };
+            } else {
+              // Aplicar en débito estándar
+              const isExpense = originalTx.type === "expense";
+              const balAdj = isExpense ? -newAmount : newAmount;
+              return {
+                ...a,
+                balance: (parseFloat(a.balance) || 0) + balAdj
+              };
+            }
+          }
+          return a;
+        });
+
+        // 4. ACTUALIZAR EL HISTORIAL DE TRANSACCIONES
         const updatedTransactions = state.transactions.map(t => {
           if (t.id === editingTx.id) {
             const categoryName = state.categories.find(c => c.id === editingTx.categoryId)?.name || t.categoryName;
+            const accountName = updatedAccounts.find(a => a.id === editingTx.accountId)?.name || t.accountName;
             return {
               ...t,
+              accountId: editingTx.accountId,
+              accountName: accountName,
               categoryId: editingTx.categoryId,
               categoryName: categoryName,
               note: editingTx.note,
@@ -1334,6 +1382,21 @@
                       className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
                     />
                   </div>
+                  {}
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta</label>
+                    <select 
+                      value={editingTx.accountId} 
+                      onChange={e => setEditingTx({ ...editingTx, accountId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    >
+                      {state.accounts.map(a => (
+                        <option key={a.id} value={a.id}>
+                          {a.name} ({a.isCreditCard ? `Crédito Disp: ${fmt(a.availableLimit)}` : a.isLoan ? `Préstamo Disp: ${fmt(a.availableLimit)}` : fmt(a.balance)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Categoría</label>
                     <select 
@@ -1387,7 +1450,6 @@
             </div>
           )}
 
-          {}
           {/* MODAL EDITAR TRANSFERENCIA */}
           {editingTransfer && (
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
