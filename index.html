@@ -142,6 +142,7 @@
       const [customConfirm, setCustomConfirm] = useState(null); // { title, msg, onConfirm, onCancel, confirmText, cancelText }
       const [deleteAccId, setDeleteAccId] = useState(null);
       const [editingTx, setEditingTx] = useState(null); // Transacción activa para editar { id, categoryId, note, date, amount }
+      const [editingTransfer, setEditingTransfer] = useState(null); // Transferencia activa para editar { id, fromId, toId, amount, date, note }
 
       // --- CONFIGURACIÓN DE GOOGLE DRIVE ---
       const [gdriveConfig, setGdriveConfig] = useState(() => {
@@ -236,6 +237,13 @@
       // Movimientos recientes
       const recentTx = useMemo(() => {
         return [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+      }, [state.transactions]);
+
+      // Historial completo de transferencias
+      const transfersHistory = useMemo(() => {
+        return state.transactions
+          .filter(t => t.type === "transfer")
+          .sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions]);
 
       // Alertas de tarjetas y préstamos que vencen en 5 días o menos
@@ -500,6 +508,127 @@
         setState(updatedState);
         setEditingTx(null);
         showToast("Transacción modificada correctamente");
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      // Guardar cambios de una transferencia editada con recalculo automático
+      function handleSaveEditedTransfer() {
+        if (!editingTransfer.fromId || !editingTransfer.toId || !editingTransfer.amount) {
+          return showToast("Completa todos los campos obligatorios", "error");
+        }
+        if (editingTransfer.fromId === editingTransfer.toId) {
+          return showToast("Las cuentas deben ser diferentes", "error");
+        }
+        const newAmount = parseFloat(editingTransfer.amount);
+        if (isNaN(newAmount) || newAmount <= 0) {
+          return showToast("Monto inválido", "error");
+        }
+
+        const originalTx = state.transactions.find(t => t.id === editingTransfer.id);
+        if (!originalTx) return;
+
+        let updatedAccounts = [...state.accounts];
+
+        // 1. Revertir origen antiguo (regresar fondos)
+        updatedAccounts = updatedAccounts.map(a => {
+          if (a.id === originalTx.fromId) {
+            if (a.isCreditCard || a.isLoan) {
+              const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) - originalTx.amount);
+              const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+            } else {
+              return { ...a, balance: (parseFloat(a.balance) || 0) + originalTx.amount };
+            }
+          }
+          return a;
+        });
+
+        // 2. Revertir destino antiguo (quitar fondos transferidos anteriormente)
+        updatedAccounts = updatedAccounts.map(a => {
+          if (a.id === originalTx.toId) {
+            if (a.isCreditCard || a.isLoan) {
+              const newDebt = (parseFloat(a.cardDebt) || 0) + originalTx.amount;
+              const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+            } else {
+              return { ...a, balance: (parseFloat(a.balance) || 0) - originalTx.amount };
+            }
+          }
+          return a;
+        });
+
+        // Validar fondos del nuevo origen tras la reversión
+        const sourceAcc = updatedAccounts.find(a => a.id === editingTransfer.fromId);
+        if (!sourceAcc) return showToast("La cuenta de origen ya no existe", "error");
+        if (sourceAcc.isCreditCard || sourceAcc.isLoan) {
+          if (sourceAcc.availableLimit < newAmount) {
+            return showToast("Límite de crédito disponible insuficiente en el origen", "error");
+          }
+        } else {
+          if (sourceAcc.balance < newAmount) {
+            return showToast("Saldo de débito insuficiente en el origen", "error");
+          }
+        }
+
+        // 3. Aplicar nuevo origen (restar fondos nuevos)
+        updatedAccounts = updatedAccounts.map(a => {
+          if (a.id === editingTransfer.fromId) {
+            if (a.isCreditCard || a.isLoan) {
+              const newDebt = (parseFloat(a.cardDebt) || 0) + newAmount;
+              const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+            } else {
+              return { ...a, balance: (parseFloat(a.balance) || 0) - newAmount };
+            }
+          }
+          return a;
+        });
+
+        // 4. Aplicar nuevo destino (sumar fondos nuevos)
+        updatedAccounts = updatedAccounts.map(a => {
+          if (a.id === editingTransfer.toId) {
+            if (a.isCreditCard || a.isLoan) {
+              const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) - newAmount);
+              const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+            } else {
+              return { ...a, balance: (parseFloat(a.balance) || 0) + newAmount };
+            }
+          }
+          return a;
+        });
+
+        // 5. Actualizar la transacción
+        const fromAccName = updatedAccounts.find(a => a.id === editingTransfer.fromId)?.name || "Desconocida";
+        const toAccName = updatedAccounts.find(a => a.id === editingTransfer.toId)?.name || "Desconocida";
+
+        const updatedTransactions = state.transactions.map(t => {
+          if (t.id === editingTransfer.id) {
+            return {
+              ...t,
+              fromId: editingTransfer.fromId,
+              toId: editingTransfer.toId,
+              fromName: fromAccName,
+              toName: toAccName,
+              amount: newAmount,
+              date: editingTransfer.date,
+              note: editingTransfer.note || `Transferencia: ${fromAccName} ➔ ${toAccName}`,
+              accountId: editingTransfer.fromId,
+              accountName: fromAccName,
+            };
+          }
+          return t;
+        });
+
+        const updatedState = {
+          ...state,
+          accounts: updatedAccounts,
+          transactions: updatedTransactions
+        };
+
+        setState(updatedState);
+        setEditingTransfer(null);
+        showToast("¡Transferencia modificada con éxito!");
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
@@ -1250,6 +1379,85 @@
                   <button 
                     onClick={() => setEditingTx(null)}
                     className="flex-1 bg-slate-800 hover:bg-slate-700 py-3 rounded-xl font-bold text-xs uppercase text-slate-300 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {}
+          {/* MODAL EDITAR TRANSFERENCIA */}
+          {editingTransfer && (
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+              <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+                <h4 className="font-extrabold text-lg text-indigo-400">✏️ Modificar Transferencia</h4>
+                
+                <div className="space-y-3 text-left">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Monto</label>
+                    <input 
+                      type="number" 
+                      value={editingTransfer.amount} 
+                      onChange={e => setEditingTransfer({ ...editingTransfer, amount: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta Origen</label>
+                    <select 
+                      value={editingTransfer.fromId} 
+                      onChange={e => setEditingTransfer({ ...editingTransfer, fromId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    >
+                      {state.accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta Destino</label>
+                    <select 
+                      value={editingTransfer.toId} 
+                      onChange={e => setEditingTransfer({ ...editingTransfer, toId: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    >
+                      {state.accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Nota</label>
+                    <input 
+                      type="text" 
+                      value={editingTransfer.note} 
+                      onChange={e => setEditingTransfer({ ...editingTransfer, note: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Fecha</label>
+                    <input 
+                      type="date" 
+                      value={editingTransfer.date} 
+                      onChange={e => setEditingTransfer({ ...editingTransfer, date: e.target.value })}
+                      className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5 pt-2">
+                  <button 
+                    onClick={handleSaveEditedTransfer}
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl font-bold text-xs uppercase text-white transition-all"
+                  >
+                    Guardar
+                  </button>
+                  <button 
+                    onClick={() => setEditingTransfer(null)}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 py-3 rounded-xl font-bold text-xs uppercase text-slate-300 transition-all border border-[#1e293b]"
                   >
                     Cancelar
                   </button>
@@ -2430,7 +2638,7 @@
 
             {/* PANTALLA: TRANSFERENCIAS */}
             {screen === "transfers" && (
-              <div className="p-4">
+              <div className="p-4 space-y-6">
                 <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
                   <div>
                     <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta origen</label>
@@ -2480,6 +2688,49 @@
                   >
                     🔄 Realizar Pago o Transferencia
                   </button>
+                </div>
+
+                {}
+                {/* LISTADO DE TRANSFERENCIAS REALIZADAS */}
+                <div className="space-y-3">
+                  <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Historial de Transferencias</h3>
+                  
+                  <div className="space-y-2">
+                    {transfersHistory.map(t => (
+                      <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-[#2a364f]">
+                        <div className="space-y-1">
+                          <div className="font-semibold text-sm text-slate-200">
+                            {t.fromName} ➔ {t.toName}
+                          </div>
+                          <div className="text-[11px] text-slate-500">{t.date}</div>
+                          {t.note && <div className="text-xs text-slate-400 italic">"{t.note}"</div>}
+                        </div>
+                        
+                        <div className="flex items-center gap-3">
+                          <span className="font-extrabold text-sm text-indigo-400">{maskAmount(t.amount, false)}</span>
+                          <button 
+                            onClick={() => setEditingTransfer({
+                              id: t.id,
+                              fromId: t.fromId,
+                              toId: t.toId,
+                              amount: t.amount.toString(),
+                              date: t.date,
+                              note: t.note || ""
+                            })}
+                            className="px-3 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 rounded-xl text-xs font-bold transition-all border border-indigo-500/10 active:scale-95"
+                          >
+                            ✏️ Editar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                    {transfersHistory.length === 0 && (
+                      <div className="bg-[#121824] border border-dashed border-[#1e293b] rounded-2xl p-8 text-center text-slate-500 text-xs">
+                        No hay transferencias registradas todavía.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
