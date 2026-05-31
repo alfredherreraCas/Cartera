@@ -12,7 +12,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Google API e Identity Services para la sincronización con Drive -->
+  <!-- Google API e Identity Services para la Sincronización con Drive -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
 
@@ -239,7 +239,7 @@
         return [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
       }, [state.transactions]);
 
-      // Historial completo de transferencias
+      // Historial completo de transferencias para pestaña interna
       const transfersHistory = useMemo(() => {
         return state.transactions
           .filter(t => t.type === "transfer")
@@ -281,26 +281,97 @@
         });
       }, [state.transactions, state.budgets, state.categories]);
 
-      // --- FILTRADO DE CONSULTAS ---
+      // --- FILTRADO DE CONSULTAS: DOBLE ENTRADA VIRTUALIZADA PARA TRANSFERENCIAS (CORRECCIÓN) ---
       const qResults = useMemo(() => {
-        return state.transactions.filter(t => {
-          if (t.type === "transfer") return false;
-          if (qFilter.categoryId && t.categoryId !== qFilter.categoryId) return false;
-          if (qFilter.accountId && t.accountId !== qFilter.accountId) return false;
+        const list = [];
+        state.transactions.forEach(t => {
+          if (t.type === "transfer") {
+            const matchFrom = !qFilter.accountId || t.fromId === qFilter.accountId;
+            const matchTo = !qFilter.accountId || t.toId === qFilter.accountId;
+            
+            if (!qFilter.accountId) {
+              // Vista general (Todas las cuentas): Mostramos ambas partes del flujo para que no se pierdan datos de origen ni de destino
+              list.push({
+                ...t,
+                id: `${t.id}_from`,
+                virtualType: "expense",
+                accountId: t.fromId,
+                accountName: t.fromName,
+                categoryName: "Transferencia (Salida)",
+                categoryId: "__transfer__",
+                displayAmount: -t.amount,
+                note: t.note || `Hacia ${t.toName}`
+              });
+              
+              list.push({
+                ...t,
+                id: `${t.id}_to`,
+                virtualType: "income",
+                accountId: t.toId,
+                accountName: t.toName,
+                categoryName: "Transferencia (Entrada)",
+                categoryId: "__transfer__",
+                displayAmount: t.amount,
+                note: t.note || `Desde ${t.fromName}`
+              });
+            } else {
+              // Filtrado por cuenta específica: proyectamos el egreso o ingreso correspondiente
+              if (matchFrom) {
+                list.push({
+                  ...t,
+                  id: `${t.id}_from`,
+                  virtualType: "expense",
+                  accountId: t.fromId,
+                  accountName: t.fromName,
+                  categoryName: "Transferencia (Salida)",
+                  categoryId: "__transfer__",
+                  displayAmount: -t.amount,
+                  note: t.note || `Hacia ${t.toName}`
+                });
+              }
+              if (matchTo) {
+                list.push({
+                  ...t,
+                  id: `${t.id}_to`,
+                  virtualType: "income",
+                  accountId: t.toId,
+                  accountName: t.toName,
+                  categoryName: "Transferencia (Entrada)",
+                  categoryId: "__transfer__",
+                  displayAmount: t.amount,
+                  note: t.note || `Desde ${t.fromName}`
+                });
+              }
+            }
+          } else {
+            // Transacciones normales de gastos/ingresos
+            if (qFilter.categoryId && t.categoryId !== qFilter.categoryId) return;
+            if (qFilter.accountId && t.accountId !== qFilter.accountId) return;
+            
+            list.push({
+              ...t,
+              displayAmount: t.type === "income" ? t.amount : -t.amount,
+              virtualType: t.type
+            });
+          }
+        });
+
+        // Filtrado final por fechas
+        return list.filter(t => {
           if (qFilter.from && t.date < qFilter.from) return false;
           if (qFilter.to && t.date > qFilter.to) return false;
           return true;
         }).sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions, qFilter]);
 
-      // --- CÁLCULO DE GRÁFICO DE CATEGORÍAS (EGRESOS) ---
+      // --- CÁLCULO DE GRÁFICO DE CATEGORÍAS (EGRESOS CON TRANSFERENCIAS INCLUIDAS) ---
       const categoryChartData = useMemo(() => {
-        const expenses = qResults.filter(t => t.type === "expense");
-        const totalExpense = expenses.reduce((s, t) => s + t.amount, 0);
+        const expenses = qResults.filter(t => t.virtualType === "expense");
+        const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
         
         const aggregated = {};
         expenses.forEach(t => {
-          aggregated[t.categoryId] = (aggregated[t.categoryId] || 0) + t.amount;
+          aggregated[t.categoryId] = (aggregated[t.categoryId] || 0) + Math.abs(t.displayAmount);
         });
 
         const colorPalette = [
@@ -309,25 +380,32 @@
         ];
 
         return Object.keys(aggregated).map((catId, index) => {
-          const category = state.categories.find(c => c.id === catId);
+          let name = "Otros";
+          if (catId === "__transfer__") {
+            name = "Transferencia (Salida)";
+          } else {
+            const category = state.categories.find(c => c.id === catId);
+            if (category) name = category.name;
+          }
           const amount = aggregated[catId];
           const pct = totalExpense > 0 ? (amount / totalExpense) * 100 : 0;
           return {
             categoryId: catId,
-            name: category ? category.name : "Otros",
+            name: name,
             amount,
             pct,
             color: colorPalette[index % colorPalette.length]
           };
-        }).sort((a, b) => b.amount - a.amount); // De mayor a menor gasto
+        }).sort((a, b) => b.amount - a.amount);
       }, [qResults, state.categories]);
 
+      // Cálculo de los indicadores de consulta leyendo la proyección virtual
       const qIncome = useMemo(() => {
-        return qResults.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+        return qResults.filter(t => t.virtualType === "income").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
       }, [qResults]);
 
       const qExpense = useMemo(() => {
-        return qResults.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+        return qResults.filter(t => t.virtualType === "expense").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
       }, [qResults]);
 
       const maxBal = useMemo(() => {
@@ -430,7 +508,7 @@
         }
       }
 
-      // --- MODIFICAR TRANSACCIÓN REGISTRADA ---
+      // --- MODIFICAR TRANSACCIÓN REGISTRADA CON RECALCULO COMPLETO ---
       function handleOpenEditTx(t) {
         setEditingTx({
           id: t.id,
@@ -460,7 +538,6 @@
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === originalTx.accountId) {
             if (a.isCreditCard || a.isLoan) {
-              // Revertir: Si fue gasto (expense), restamos el monto original de la deuda. Si fue ingreso (income), lo sumamos.
               const isExpense = originalTx.type === "expense";
               const debtAdj = isExpense ? -originalTx.amount : originalTx.amount;
               const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) + debtAdj);
@@ -472,7 +549,6 @@
                 balance: -newDebt
               };
             } else {
-              // Revertir en cuenta de débito estándar
               const isExpense = originalTx.type === "expense";
               const balAdj = isExpense ? originalTx.amount : -originalTx.amount;
               return {
@@ -486,7 +562,7 @@
 
         // 2. VALIDAR si la nueva cuenta tiene fondos o límite suficiente (solo si el tipo es un egreso/gasto)
         const targetAcc = updatedAccounts.find(a => a.id === editingTx.accountId);
-        if (!targetAcc) return showToast("La cuenta destino seleccionada no existe", "error");
+        if (!targetAcc) return showToast("La cuenta seleccionada ya no existe", "error");
 
         if (originalTx.type === "expense") {
           if (targetAcc.isCreditCard || targetAcc.isLoan) {
@@ -504,7 +580,6 @@
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === editingTx.accountId) {
             if (a.isCreditCard || a.isLoan) {
-              // Aplicar: Gasto incrementa la deuda. Ingreso reduce la deuda.
               const isExpense = originalTx.type === "expense";
               const debtAdj = isExpense ? newAmount : -newAmount;
               const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) + debtAdj);
@@ -516,7 +591,6 @@
                 balance: -newDebt
               };
             } else {
-              // Aplicar en débito estándar
               const isExpense = originalTx.type === "expense";
               const balAdj = isExpense ? -newAmount : newAmount;
               return {
@@ -1281,8 +1355,8 @@
             `"${t.categoryName}"`,
             `"${t.accountName}"`,
             `"${(t.note || "").replace(/"/g, '""')}"`,
-            t.type === "income" ? "Ingreso" : "Gasto",
-            t.amount
+            t.virtualType === "income" ? "Ingreso" : "Gasto",
+            Math.abs(t.displayAmount)
           ].join(",");
           csvContent += row + "\r\n";
         });
@@ -1366,7 +1440,7 @@
             </div>
           )}
 
-          {/* MODAL EDITAR TRANSACCIÓN */}
+          {/* MODAL EDITAR TRANSACCIÓN (CON SELECTOR DE CUENTAS) */}
           {editingTx && (
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
               <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 w-full max-w-sm space-y-4">
@@ -1382,7 +1456,6 @@
                       className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-sm outline-none"
                     />
                   </div>
-                  {}
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Cuenta</label>
                     <select 
@@ -1628,7 +1701,7 @@
             </div>
           )}
 
-          {/* DESGLOSE DE SALDOS POR CUENTA MODAL (ORGANIZADO POR PESTAÑAS) */}
+          {/* DESGLOSE DE SALDOS POR CUENTA MODAL */}
           {showBreakdown && (
             <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-xs">
               <div className="w-full max-w-md bg-[#121824] rounded-t-3xl border-t border-[#1e293b] p-6 pb-8 max-h-[90vh] flex flex-col animate-slide-up">
@@ -1789,7 +1862,7 @@
             {screen === "home" && (
               <div className="p-4 space-y-6">
                 
-                {/* TARJETA DE BALANCE PRINCIPAL CON BOTONES INTEGRADOS (SOLICITUD 1) */}
+                {/* TARJETA DE BALANCE PRINCIPAL CON BOTONES INTEGRADOS */}
                 <div className="bg-gradient-to-br from-indigo-950 to-indigo-850 rounded-3xl p-6 text-white shadow-lg shadow-indigo-950/40 border border-indigo-500/20 relative overflow-hidden space-y-4">
                   <div className="absolute -right-10 -bottom-10 opacity-5 text-9xl">💰</div>
                   
@@ -1821,7 +1894,7 @@
                     <span className="text-xl">💳</span>
                   </div>
 
-                  {/* NUEVA UBICACIÓN: BOTONES INGRESO/EGRESO INTEGRADOS (SOLICITUD 1) */}
+                  {/* BOTONES INGRESO/EGRESO INTEGRADOS */}
                   <div className="grid grid-cols-2 gap-3 pt-3 border-t border-indigo-500/20">
                     <button 
                       onClick={() => openScreen("income", "income")}
@@ -2752,7 +2825,6 @@
                   </button>
                 </div>
 
-                {}
                 {/* LISTADO DE TRANSFERENCIAS REALIZADAS */}
                 <div className="space-y-3">
                   <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Historial de Transferencias</h3>
@@ -2828,7 +2900,7 @@
                   </button>
                 </div>
 
-                {/* GRÁFICO DE CATEGORÍAS AUTOMÁTICO (SOLICITUD 5) */}
+                {/* GRÁFICO DE CATEGORÍAS AUTOMÁTICO */}
                 {categoryChartData.length > 0 && (
                   <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-5 space-y-3">
                     <h3 className="text-xs font-bold uppercase text-slate-400 tracking-wider">📊 Distribución de Gastos</h3>
@@ -2868,7 +2940,7 @@
                   </button>
                 </div>
 
-                {/* Resumen - SIEMPRE MUESTRA VALORES EN ESTA PANTALLA (SOLICITUD 4) */}
+                {/* Resumen - SIEMPRE MUESTRA VALORES EN ESTA PANTALLA */}
                 <div className="grid grid-cols-3 gap-2 text-center text-xs">
                   <div className="bg-[#121c17] p-3 rounded-2xl border border-emerald-500/15">
                     <div className="text-emerald-400">Ingresos</div>
@@ -2884,26 +2956,49 @@
                   </div>
                 </div>
 
-                {/* Listado con Botón de Modificación (SOLICITUD 2 y 4) */}
+                {/* Listado con Botones de Modificación / Edición de Transacciones y Transferencias */}
                 <div className="space-y-2">
                   {qResults.map(t => (
                     <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-slate-800">
                       <div>
                         <div className="font-semibold text-sm text-slate-200 flex items-center gap-2">
                           {t.categoryName}
-                          <button 
-                            onClick={() => handleOpenEditTx(t)}
-                            className="text-xs p-1 text-indigo-400 hover:text-indigo-300 transition-all bg-indigo-500/10 rounded-md"
-                            title="Modificar transacción"
-                          >
-                            ✏️ Editar
-                          </button>
+                          {t.type !== "transfer" ? (
+                            <button 
+                              onClick={() => handleOpenEditTx(t)}
+                              className="text-xs p-1 text-indigo-400 hover:text-indigo-300 transition-all bg-indigo-500/10 rounded-md"
+                              title="Modificar transacción"
+                            >
+                              ✏️ Editar
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                const origId = t.id.replace("_from", "").replace("_to", "");
+                                const origTrf = state.transactions.find(x => x.id === origId);
+                                if (origTrf) {
+                                  setEditingTransfer({
+                                    id: origTrf.id,
+                                    fromId: origTrf.fromId,
+                                    toId: origTrf.toId,
+                                    amount: origTrf.amount.toString(),
+                                    date: origTrf.date,
+                                    note: origTrf.note || ""
+                                  });
+                                }
+                              }}
+                              className="text-xs p-1 text-indigo-400 hover:text-indigo-300 transition-all bg-indigo-500/10 rounded-md"
+                              title="Modificar transferencia"
+                            >
+                              ✏️ Editar
+                            </button>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-500">{t.accountName} • {t.date}</div>
                         {t.note && <div className="text-xs text-slate-400 italic mt-1">"{t.note}"</div>}
                       </div>
-                      <div className={`font-bold text-sm ${t.type === "income" ? "text-emerald-400" : "text-rose-400"}`}>
-                        {t.type === "income" ? "+" : "-"}{fmt(t.amount)}
+                      <div className={`font-bold text-sm ${t.virtualType === "income" ? "text-emerald-400" : "text-rose-400"}`}>
+                        {t.virtualType === "income" ? "+" : "-"}{fmt(Math.abs(t.displayAmount))}
                       </div>
                     </div>
                   ))}
@@ -2917,7 +3012,7 @@
               </div>
             )}
 
-            {/* PANTALLA: PREVISUALIZADOR DE PDF INTEGRADO (SOLICITUD 3) */}
+            {/* PANTALLA: PREVISUALIZADOR DE PDF INTEGRADO */}
             {screen === "print_preview" && (
               <div className="bg-white text-slate-900 min-h-screen p-6 print-container space-y-6 flex flex-col absolute inset-0 z-[100] overflow-y-auto">
                 {/* Barra flotante de comandos - no se imprime */}
@@ -2963,8 +3058,8 @@
                           <td className="p-2 font-semibold">{t.categoryName}</td>
                           <td className="p-2">{t.accountName}</td>
                           <td className="p-2 italic text-slate-500">{t.note || "-"}</td>
-                          <td className={`p-2 text-right font-bold ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            {t.type === 'income' ? '+' : '-'}{fmt(t.amount)}
+                          <td className={`p-2 text-right font-bold ${t.virtualType === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {t.virtualType === 'income' ? '+' : '-'}{fmt(Math.abs(t.displayAmount))}
                           </td>
                         </tr>
                       ))}
@@ -3081,7 +3176,7 @@
 
           </main>
 
-          {/* MENÚ DE NAVEGACIÓN INFERIOR CON PESTAÑA DE PAGOS */}
+          {/* MENÚ DE NAVEGACIÓN INFERIOR */}
           <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#0e1320]/95 backdrop-blur-md border-t border-[#1e293b] grid grid-cols-5 py-2.5 px-2 z-40 no-print">
             {[
               { label: "Inicio", icon: "🏠", screen: "home" },
