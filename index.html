@@ -69,7 +69,7 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo } = React;
 
-    // Estado inicial de la aplicación actualizado con las nuevas características
+    // Estado inicial de la aplicación actualizado con las nuevas características de ciclo de préstamos
     const initialState = {
       accounts: [
         { id: "1", name: "Efectivo", balance: 1000, isCreditCard: false, isLoan: false },
@@ -97,22 +97,71 @@
       return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n || 0);
     }
 
-    // Calcular días restantes hasta el día de pago del mes actual/siguiente
-    function getDaysUntilDue(dueDay) {
-      if (!dueDay) return null;
+    // Helper inteligente para calcular el próximo vencimiento de tarjetas o préstamos (mensual o quincenal)
+    function getNextPaymentInfo(account) {
+      if (!account.dueDay) return null;
+      
       const now = new Date();
       const year = now.getFullYear();
       const month = now.getMonth();
-      const parsedDueDay = parseInt(dueDay, 10);
+      const today = now.getDate();
       
-      let dueDate = new Date(year, month, parsedDueDay);
-      // Si el día de pago ya pasó en este mes, calcular para el mes siguiente
-      if (dueDate < now && now.getDate() !== parsedDueDay) {
-        dueDate = new Date(year, month + 1, parsedDueDay);
+      let nextDueDate = null;
+      let cycleId = ""; // Identificador único de ciclo para evitar marcas de pago fantasma
+      
+      if (account.isLoan && account.loanFrequency === "quincenal") {
+        const day1 = parseInt(account.dueDay, 10) || 15;
+        const day2 = parseInt(account.dueDay2, 10) || 30;
+        
+        const date1Current = new Date(year, month, day1);
+        const date2Current = new Date(year, month, day2);
+        const date1Next = new Date(year, month + 1, day1);
+        
+        const todayStart = new Date(year, month, today);
+        
+        if (todayStart <= date1Current) {
+          nextDueDate = date1Current;
+          cycleId = `${year}-${String(month + 1).padStart(2, '0')}-Q1`;
+        } else if (todayStart <= date2Current) {
+          nextDueDate = date2Current;
+          cycleId = `${year}-${String(month + 1).padStart(2, '0')}-Q2`;
+        } else {
+          nextDueDate = date1Next;
+          const nextMonth = (month + 1) % 12;
+          const nextYear = year + Math.floor((month + 1) / 12);
+          cycleId = `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}-Q1`;
+        }
+      } else {
+        // Lógica mensual estándar (Para Tarjetas de Crédito y Préstamos Mensuales)
+        const day = parseInt(account.dueDay, 10);
+        const dateCurrent = new Date(year, month, day);
+        const dateNext = new Date(year, month + 1, day);
+        const todayStart = new Date(year, month, today);
+        
+        if (todayStart <= dateCurrent) {
+          nextDueDate = dateCurrent;
+          cycleId = `${year}-${String(month + 1).padStart(2, '0')}-M`;
+        } else {
+          nextDueDate = dateNext;
+          const nextMonth = (month + 1) % 12;
+          const nextYear = year + Math.floor((month + 1) / 12);
+          cycleId = `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}-M`;
+        }
       }
       
-      const diffTime = dueDate.getTime() - now.getTime();
-      return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      // Calcular diferencia en días exactos
+      const diffTime = nextDueDate.getTime() - new Date(year, month, today).getTime();
+      const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      // Saber si ya está pagado en este ciclo
+      const isPaid = account.lastPaidCycle === cycleId || (account.lastPaidMonth && cycleId.startsWith(account.lastPaidMonth));
+      
+      return {
+        dueDate: nextDueDate.toISOString().split("T")[0],
+        daysLeft,
+        cycleId,
+        isPaid
+      };
     }
 
     function App() {
@@ -171,6 +220,8 @@
         cardDebt: "", 
         availableLimit: "",
         dueDay: "", // Día de pago (1-31)
+        loanFrequency: "mensual", // mensual | quincenal
+        dueDay2: "", // Segundo día de pago en caso de ser quincenal
       });
       const [editAcc, setEditAcc] = useState(null);
       const [catForm, setCatForm] = useState({ name: "", type: "expense" });
@@ -246,18 +297,16 @@
           .sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions]);
 
-      // Alertas de deudas que vencen en 5 días o menos (y no han sido pagadas este mes)
+      // Alertas de deudas que vencen en 5 días o menos (y no han sido pagadas este mes o ciclo)
       const urgentPayments = useMemo(() => {
-        const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
         return state.accounts
-          .filter(a => (a.isCreditCard || a.isLoan) && a.dueDay)
-          .filter(a => parseFloat(a.cardDebt) > 0 && a.lastPaidMonth !== currentMonthStr)
+          .filter(a => (a.isCreditCard || a.isLoan) && a.dueDay && parseFloat(a.cardDebt) > 0)
           .map(a => {
-            const daysLeft = getDaysUntilDue(a.dueDay);
-            return { ...a, daysLeft };
+            const payInfo = getNextPaymentInfo(a);
+            return { ...a, payInfo };
           })
-          .filter(a => a.daysLeft !== null && a.daysLeft <= 5)
-          .sort((a, b) => a.daysLeft - b.daysLeft);
+          .filter(a => a.payInfo && !a.payInfo.isPaid && a.payInfo.daysLeft <= 5)
+          .sort((a, b) => a.payInfo.daysLeft - b.payInfo.daysLeft);
       }, [state.accounts]);
 
       // Presupuesto consumido por categoría en el período actual
@@ -292,7 +341,6 @@
             const matchTo = !qFilter.accountId || t.toId === qFilter.accountId;
             
             if (!qFilter.accountId) {
-              // Vista general (Todas las cuentas): Mostramos ambas partes del flujo
               list.push({
                 ...t,
                 id: `${t.id}_from`,
@@ -317,7 +365,6 @@
                 note: t.note || `Desde ${t.fromName}`
               });
             } else {
-              // Filtrado por cuenta específica
               if (matchFrom) {
                 list.push({
                   ...t,
@@ -346,7 +393,6 @@
               }
             }
           } else {
-            // Transacciones normales
             if (qFilter.categoryId && t.categoryId !== qFilter.categoryId) return;
             if (qFilter.accountId && t.accountId !== qFilter.accountId) return;
             
@@ -632,23 +678,30 @@
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
-      // --- MARCAR/DESMARCAR MANUALMENTE EL PAGO DE UN CICLO DE TARJETA ---
+      // --- MARCAR/DESMARCAR MANUALMENTE EL PAGO DE UN CICLO DE TARJETA O PRÉSTAMO ---
       function toggleAccountPaymentStatus(accountId) {
-        const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+        const acc = state.accounts.find(a => a.id === accountId);
+        if (!acc) return;
+        
+        const payInfo = getNextPaymentInfo(acc);
+        if (!payInfo) return;
+
         const newAccounts = state.accounts.map(a => {
           if (a.id === accountId) {
-            const alreadyPaid = a.lastPaidMonth === currentMonthStr;
+            const alreadyPaid = a.lastPaidCycle === payInfo.cycleId;
             return {
               ...a,
-              lastPaidMonth: alreadyPaid ? "" : currentMonthStr
+              lastPaidCycle: alreadyPaid ? "" : payInfo.cycleId,
+              lastPaidMonth: alreadyPaid ? "" : payInfo.cycleId.substring(0, 7) // retrocompatibilidad
             };
           }
           return a;
         });
+        
         const updatedState = { ...state, accounts: newAccounts };
         setState(updatedState);
-        const isNowPaid = newAccounts.find(a => a.id === accountId).lastPaidMonth === currentMonthStr;
-        showToast(isNowPaid ? "✓ Cuenta marcada como pagada este ciclo" : "Pago del ciclo desmarcado");
+        const isNowPaid = newAccounts.find(a => a.id === accountId).lastPaidCycle === payInfo.cycleId;
+        showToast(isNowPaid ? "✓ Cuenta marcada como pagada para este ciclo" : "Pago del ciclo desmarcado");
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
@@ -725,8 +778,11 @@
           return a;
         });
 
-        // 4. Aplicar nuevo destino (Y MARCAR COMO PAGADA LA TARJETA AUTOMÁTICAMENTE)
-        const currentMonthStr = new Date().toISOString().slice(0, 7);
+        // 4. Aplicar nuevo destino (Y MARCAR COMO PAGADA LA TARJETA/PRÉSTAMO AUTOMÁTICAMENTE)
+        const toAccObj = updatedAccounts.find(a => a.id === editingTransfer.toId);
+        const nextPayInfo = getNextPaymentInfo(toAccObj);
+        const targetCycleId = nextPayInfo ? nextPayInfo.cycleId : "";
+        
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === editingTransfer.toId) {
             if (a.isCreditCard || a.isLoan) {
@@ -737,7 +793,8 @@
                 cardDebt: newDebt, 
                 availableLimit: newAvailable, 
                 balance: -newDebt,
-                lastPaidMonth: currentMonthStr // Considerada pagada en el ciclo actual
+                lastPaidCycle: targetCycleId, // Considerada pagada en el ciclo actual calculado
+                lastPaidMonth: targetCycleId ? targetCycleId.substring(0, 7) : "" 
               };
             } else {
               return { ...a, balance: (parseFloat(a.balance) || 0) + newAmount };
@@ -786,6 +843,9 @@
         
         let newAccounts;
         const parsedDueDay = accForm.dueDay ? Math.min(31, Math.max(1, parseInt(accForm.dueDay, 10))) : "";
+        const parsedDueDay2 = accForm.isLoan && accForm.loanFrequency === "quincenal" && accForm.dueDay2
+          ? Math.min(31, Math.max(1, parseInt(accForm.dueDay2, 10)))
+          : "";
 
         if (accForm.isCreditCard || accForm.isLoan) {
           const limit = parseFloat(accForm.totalLimit);
@@ -805,7 +865,10 @@
             availableLimit: available,
             balance: -debt,
             dueDay: parsedDueDay,
-            lastPaidMonth: "" // Inicializa vacío
+            dueDay2: parsedDueDay2,
+            loanFrequency: accForm.isLoan ? (accForm.loanFrequency || "mensual") : "",
+            lastPaidMonth: "",
+            lastPaidCycle: ""
           };
 
           if (editAcc) {
@@ -828,7 +891,7 @@
                 balance: bal, 
                 isCreditCard: false,
                 isLoan: false,
-                totalLimit: "", cardDebt: "", availableLimit: "", dueDay: ""
+                totalLimit: "", cardDebt: "", availableLimit: "", dueDay: "", dueDay2: "", loanFrequency: ""
               } : a
             );
             setEditAcc(null);
@@ -839,7 +902,7 @@
               balance: bal, 
               isCreditCard: false,
               isLoan: false,
-              totalLimit: "", cardDebt: "", availableLimit: "", dueDay: ""
+              totalLimit: "", cardDebt: "", availableLimit: "", dueDay: "", dueDay2: "", loanFrequency: ""
             };
             newAccounts = [...state.accounts, newAcc];
           }
@@ -847,7 +910,18 @@
 
         const updatedState = { ...state, accounts: newAccounts };
         setState(updatedState);
-        setAccForm({ name: "", balance: "", isCreditCard: false, isLoan: false, totalLimit: "", cardDebt: "", availableLimit: "", dueDay: "" });
+        setAccForm({ 
+          name: "", 
+          balance: "", 
+          isCreditCard: false, 
+          isLoan: false, 
+          totalLimit: "", 
+          cardDebt: "", 
+          availableLimit: "", 
+          dueDay: "", 
+          dueDay2: "", 
+          loanFrequency: "mensual" 
+        });
         showToast("Cuenta guardada correctamente");
 
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
@@ -973,7 +1047,7 @@
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
-      // Registrar transferencia y MARCAR TARJETA COMO PAGADA
+      // Registrar transferencia y MARCAR TARJETA/PRÉSTAMO COMO PAGADA
       function submitTransfer() {
         if (!trfForm.fromId || !trfForm.toId || !trfForm.amount) return showToast("Completa todos los campos", "error");
         if (trfForm.fromId === trfForm.toId) return showToast("Las cuentas deben ser diferentes", "error");
@@ -990,7 +1064,9 @@
           if (fromAcc.balance < amt) return showToast("Saldo insuficiente", "error");
         }
 
-        const currentMonthStr = new Date().toISOString().slice(0, 7);
+        const nextPayInfo = getNextPaymentInfo(toAcc);
+        const targetCycleId = nextPayInfo ? nextPayInfo.cycleId : "";
+
         const newAccounts = state.accounts.map(a => {
           if (a.id === trfForm.fromId) {
             if (a.isCreditCard || a.isLoan) {
@@ -1010,7 +1086,8 @@
                 cardDebt: newDebt, 
                 availableLimit: newAvailable, 
                 balance: -newDebt,
-                lastPaidMonth: currentMonthStr // Marcada como pagada en el mes actual
+                lastPaidCycle: targetCycleId, // Marcada como pagada en el ciclo calculado
+                lastPaidMonth: targetCycleId ? targetCycleId.substring(0, 7) : ""
               };
             } else {
               return { ...a, balance: a.balance + amt };
@@ -1729,7 +1806,7 @@
                 </div>
 
                 <div className="pt-4 border-t border-[#1e293b] text-center text-xs text-[#64748b]">
-                  Mi Cartera Pro v2.5 • NIP y Presupuestos
+                  Mi Cartera Pro v2.6 • Sincronización Flexible
                 </div>
               </div>
             </div>
@@ -1818,7 +1895,11 @@
                             <span>Monto Pagado: <strong className="text-emerald-400">{maskAmount(a.availableLimit)}</strong></span>
                             <span>Monto Prestado: {maskAmount(a.totalLimit)}</span>
                           </div>
-                          {a.dueDay && <div className="text-[10px] text-indigo-300 font-semibold">Día de Pago: cada {a.dueDay}</div>}
+                          {a.loanFrequency && (
+                            <div className="text-[10px] text-indigo-300 font-semibold">
+                              Frecuencia: {a.loanFrequency === "quincenal" ? `Quincenal (Días ${a.dueDay} y ${a.dueDay2})` : `Mensual (Día ${a.dueDay})`}
+                            </div>
+                          )}
                         </div>
                       ))}
                       <div className="flex justify-between items-center font-bold text-base mt-4 pt-3 border-t border-[#1e293b] text-slate-300">
@@ -2183,7 +2264,7 @@
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                            {accForm.isCreditCard ? "Monto Disponible" : "Monto Pagado"}
+                            {accForm.isCreditCard ? "Monto Disponible" : "Monto Amortizado"}
                           </label>
                           <input 
                             type="number" 
@@ -2193,6 +2274,85 @@
                             className="w-full bg-[#0a0f19]/60 border border-slate-700/50 text-indigo-300 rounded-xl py-2.5 px-3 text-xs outline-none"
                           />
                         </div>
+                      </div>
+
+                      {/* CONFIGURACIÓN EXCLUSIVA PARA PRÉSTAMOS */}
+                      {accForm.isLoan && (
+                        <div className="space-y-3 bg-[#0a0f19] p-3 rounded-2xl border border-[#1e293b]">
+                          <div>
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">¿Cómo se pagará este préstamo?</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setAccForm({ ...accForm, loanFrequency: "mensual" })}
+                                className={`py-2 rounded-xl text-xs font-bold transition-all ${
+                                  accForm.loanFrequency !== "quincenal"
+                                    ? "bg-indigo-600/25 text-indigo-400 border border-indigo-500/30"
+                                    : "bg-slate-900 text-slate-400 border border-slate-800"
+                                }`}
+                              >
+                                Mensual
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAccForm({ ...accForm, loanFrequency: "quincenal" })}
+                                className={`py-2 rounded-xl text-xs font-bold transition-all ${
+                                  accForm.loanFrequency === "quincenal"
+                                    ? "bg-indigo-600/25 text-indigo-400 border border-indigo-500/30"
+                                    : "bg-slate-900 text-slate-400 border border-slate-800"
+                                }`}
+                              >
+                                Quincenal
+                              </button>
+                            </div>
+                          </div>
+
+                          {accForm.loanFrequency === "quincenal" ? (
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-1">1er Día de Pago</label>
+                                <input 
+                                  type="number" 
+                                  min="1" 
+                                  max="31" 
+                                  placeholder="Ej. 15" 
+                                  value={accForm.dueDay} 
+                                  onChange={e => setAccForm({ ...accForm, dueDay: e.target.value })}
+                                  className="w-full bg-[#0d1320] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-xs outline-none focus:border-indigo-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block mb-1">2do Día de Pago</label>
+                                <input 
+                                  type="number" 
+                                  min="1" 
+                                  max="31" 
+                                  placeholder="Ej. 30" 
+                                  value={accForm.dueDay2} 
+                                  onChange={e => setAccForm({ ...accForm, dueDay2: e.target.value })}
+                                  className="w-full bg-[#0d1320] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-xs outline-none focus:border-indigo-500"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Día de Pago Mensual (1-31)</label>
+                              <input 
+                                type="number" 
+                                min="1" 
+                                max="31" 
+                                placeholder="Ej. 10" 
+                                value={accForm.dueDay} 
+                                onChange={e => setAccForm({ ...accForm, dueDay: e.target.value })}
+                                className="w-full bg-[#0d1320] border border-[#1e293b] rounded-xl py-2 px-3 text-white text-xs outline-none focus:border-indigo-500"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* DIA DE PAGO DIRECTO SI ES TARJETA DE CRÉDITO */}
+                      {accForm.isCreditCard && (
                         <div>
                           <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Día de Pago (1-31)</label>
                           <input 
@@ -2205,7 +2365,7 @@
                             className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-2.5 px-3 text-white text-xs focus:border-indigo-500 outline-none"
                           />
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
 
@@ -2220,7 +2380,9 @@
                       <button 
                         onClick={() => { 
                           setEditAcc(null); 
-                          setAccForm({ name: "", balance: "", isCreditCard: false, isLoan: false, totalLimit: "", cardDebt: "", availableLimit: "", dueDay: "" }); 
+                          setAccForm({ 
+                            name: "", balance: "", isCreditCard: false, isLoan: false, totalLimit: "", cardDebt: "", availableLimit: "", dueDay: "", dueDay2: "", loanFrequency: "mensual" 
+                          }); 
                         }}
                         className="bg-slate-700 hover:bg-slate-600 px-5 py-3.5 rounded-xl font-semibold text-sm transition-all"
                       >
@@ -2230,7 +2392,7 @@
                   </div>
                 </div>
 
-                {/* Lista de Cuentas */}
+                {/* Lista de Cuentas actualizadas */}
                 <div className="space-y-2">
                   <h4 className="text-xs font-bold uppercase text-slate-400 tracking-wider">Cuentas creadas</h4>
                   {state.accounts.map(a => (
@@ -2242,9 +2404,19 @@
                           {a.isLoan && <span className="text-[9px] bg-amber-950 text-amber-300 px-2 py-0.5 rounded-full border border-amber-800/30">Préstamo</span>}
                         </div>
                         {(a.isCreditCard || a.isLoan) ? (
-                          <div className="text-xs text-slate-400 space-y-0.5">
+                          <div className="text-xs text-slate-400 space-y-1">
                             <div>Deuda actual: <span className="text-rose-400 font-bold">{maskAmount(a.cardDebt)}</span></div>
-                            {a.dueDay && <div>Día de Pago: <span className="text-indigo-400 font-bold">Día {a.dueDay}</span></div>}
+                            
+                            {/* REQUISITO: Para tarjeta de crédito, se visualiza también el disponible */}
+                            {a.isCreditCard && (
+                              <div>Disponible: <span className="text-emerald-400 font-bold">{maskAmount(a.availableLimit)}</span></div>
+                            )}
+
+                            {a.dueDay && (
+                              <div>Día de Pago: <span className="text-indigo-400 font-bold">
+                                {a.isLoan && a.loanFrequency === "quincenal" ? `Días ${a.dueDay} y ${a.dueDay2}` : `Día ${a.dueDay}`}
+                              </span></div>
+                            )}
                           </div>
                         ) : (
                           <div className="text-emerald-400 font-bold text-sm">{maskAmount(a.balance)}</div>
@@ -2262,7 +2434,9 @@
                               totalLimit: a.totalLimit || "",
                               cardDebt: a.cardDebt || "",
                               availableLimit: a.availableLimit || "",
-                              dueDay: a.dueDay || ""
+                              dueDay: a.dueDay || "",
+                              dueDay2: a.dueDay2 || "",
+                              loanFrequency: a.loanFrequency || "mensual"
                             }); 
                           }}
                           className="p-2.5 bg-blue-500/10 hover:bg-blue-500/20 rounded-xl text-blue-400 text-sm transition-all"
@@ -2284,12 +2458,25 @@
 
             {/* PANTALLA: CALENDARIO DE PAGOS (REDISENO CON CLASIFICACION DE CICLOS) */}
             {screen === "payments" && (() => {
-              const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
               const billAccounts = state.accounts.filter(a => (a.isCreditCard || a.isLoan) && a.dueDay);
               
-              // Clasificar en deudas pendientes y completadas/liquidadas para el ciclo actual
-              const pendingBills = billAccounts.filter(a => parseFloat(a.cardDebt) > 0 && a.lastPaidMonth !== currentMonthStr);
-              const paidBills = billAccounts.filter(a => parseFloat(a.cardDebt) <= 0 || a.lastPaidMonth === currentMonthStr);
+              // Clasificar en deudas pendientes y completadas de manera dinámica para cada ciclo calculado
+              const pendingBills = [];
+              const paidBills = [];
+
+              billAccounts.forEach(a => {
+                const payInfo = getNextPaymentInfo(a);
+                if (payInfo) {
+                  if (parseFloat(a.cardDebt) <= 0 || payInfo.isPaid) {
+                    paidBills.push({ ...a, payInfo });
+                  } else {
+                    pendingBills.push({ ...a, payInfo });
+                  }
+                }
+              });
+
+              // Ordenar deudas pendientes de menor a mayor días restantes
+              pendingBills.sort((a, b) => a.payInfo.daysLeft - b.payInfo.daysLeft);
 
               return (
                 <div className="p-4 space-y-6">
@@ -2298,7 +2485,7 @@
                       <span className="text-2xl">📅</span>
                       <div>
                         <h3 className="font-extrabold text-base text-slate-200">Próximos Vencimientos</h3>
-                        <p className="text-xs text-slate-400 mt-0.5">Control de tus tarjetas de crédito y préstamos</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Control inteligente para tus deudas recurrentes</p>
                       </div>
                     </div>
 
@@ -2310,7 +2497,7 @@
                       </h4>
                       
                       {pendingBills.map(a => {
-                        const daysLeft = getDaysUntilDue(a.dueDay);
+                        const daysLeft = a.payInfo.daysLeft;
                         const isAlert = daysLeft !== null && daysLeft <= 5;
                         
                         return (
@@ -2326,12 +2513,14 @@
                               <div>
                                 <span className="font-bold text-sm block text-slate-200">{a.name}</span>
                                 <span className="text-xs text-slate-400 block mt-0.5">
-                                  {a.isCreditCard ? "Pago de Tarjeta" : "Amortización de Préstamo"} • Día {a.dueDay}
+                                  {a.isCreditCard ? "Tarjeta de Crédito" : `Amortización Préstamo (${a.loanFrequency})`} • Próximo Pago: {a.payInfo.dueDate}
                                 </span>
                               </div>
                               <div className="text-right">
                                 {daysLeft === 0 ? (
-                                  <span className="bg-rose-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full animate-soft-pulse">¡Paga Hoy!</span>
+                                  <span className="bg-rose-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full animate-soft-pulse">¡Hoy!</span>
+                                ) : daysLeft < 0 ? (
+                                  <span className="bg-red-700 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">Vencido ({Math.abs(daysLeft)}d)</span>
                                 ) : daysLeft <= 5 ? (
                                   <span className="bg-rose-500/20 text-rose-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-rose-500/30 animate-soft-pulse">Vence en {daysLeft} d</span>
                                 ) : (
@@ -2342,15 +2531,15 @@
 
                             <div className="flex justify-between items-end mt-4 pt-3 border-t border-slate-800/40">
                               <div>
-                                <span className="text-[10px] text-slate-500 uppercase font-semibold">Deuda Pendiente</span>
+                                <span className="text-[10px] text-slate-500 uppercase font-semibold">Monto de Deuda</span>
                                 <span className="text-sm font-extrabold block text-rose-400">{maskAmount(a.cardDebt)}</span>
                               </div>
                               <div className="flex gap-2">
-                                {/* Botón para marcar manualmente como pagado */}
+                                {/* Botón para marcar manualmente como pagado en este ciclo */}
                                 <button 
                                   onClick={() => toggleAccountPaymentStatus(a.id)}
                                   className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-3 py-2 rounded-xl transition-all"
-                                  title="Marcar como pagado sin transferencia"
+                                  title="Marcar ciclo actual como liquidado"
                                 >
                                   ✓ Listo
                                 </button>
@@ -2366,7 +2555,7 @@
                                   }}
                                   className="bg-indigo-600/20 hover:bg-indigo-500/30 text-indigo-400 border border-indigo-500/30 text-[10px] font-bold px-3 py-2 rounded-xl transition-all"
                                 >
-                                  Pagar Deuda
+                                  Abonar Deuda
                                 </button>
                               </div>
                             </div>
@@ -2377,7 +2566,7 @@
                       {pendingBills.length === 0 && (
                         <div className="text-center text-slate-500 py-6 bg-[#0b0f19] rounded-2xl border border-dashed border-slate-800">
                           <span className="text-2xl block mb-1">🎉</span>
-                          <p className="text-xs">¡Todo pagado! No tienes saldos vencidos este mes.</p>
+                          <p className="text-xs">¡Felicidades! No tienes cobros o vencimientos activos pendientes para este ciclo.</p>
                         </div>
                       )}
                     </div>
@@ -2385,7 +2574,7 @@
                     {/* SECCIÓN: COMPLETADOS / LIQUIDADOS */}
                     <div className="space-y-2 pt-2 border-t border-slate-800/40">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2">
-                        Completados / Sin saldo ({paidBills.length})
+                        Ciclos Pagados / Al Corriente ({paidBills.length})
                       </h4>
                       
                       {paidBills.map(a => (
@@ -2397,22 +2586,21 @@
                             <span className="font-bold text-xs block text-slate-300">{a.name}</span>
                             <span className="text-[10px] text-slate-500 block mt-0.5">
                               {parseFloat(a.cardDebt) <= 0 
-                                ? "Sin saldo de deuda pendiente" 
-                                : `Pagado este mes (${fmt(a.cardDebt)} de deuda restante)`
+                                ? "Sin deuda activa" 
+                                : `Pagado (Deuda remanente: ${fmt(a.cardDebt)})`
                               }
                             </span>
                           </div>
                           
                           <div className="flex items-center gap-2">
                             <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-extrabold px-2.5 py-1 rounded-full border border-emerald-500/20">
-                              ✓ Pagado
+                              ✓ Al corriente
                             </span>
-                            {/* Permitir deshacer el estado pagado para recuperar la alerta */}
-                            {a.lastPaidMonth === currentMonthStr && (
+                            {a.lastPaidCycle && (
                               <button 
                                 onClick={() => toggleAccountPaymentStatus(a.id)}
                                 className="text-xs text-rose-400 hover:text-rose-300 p-1 bg-rose-500/10 rounded-lg hover:bg-rose-500/20 transition-all"
-                                title="Desmarcar pago del mes"
+                                title="Desmarcar pago del ciclo"
                               >
                                 ↩️
                               </button>
@@ -2884,7 +3072,7 @@
                     >
                       <option value="">— Selecciona origen —</option>
                       {state.accounts.map(a => (
-                        <option key={a.id} value={a.id}>{a.name} ({a.isCreditCard ? `Disp: ${fmt(a.availableLimit)}` : a.isLoan ? `Pagado: ${fmt(a.availableLimit)}` : fmt(a.balance)})</option>
+                        <option key={a.id} value={a.id}>{a.name} ({a.isCreditCard ? `Disp: ${fmt(a.availableLimit)}` : a.isLoan ? `Amortizado: ${fmt(a.availableLimit)}` : fmt(a.balance)})</option>
                       ))}
                     </select>
                   </div>
