@@ -246,10 +246,12 @@
           .sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions]);
 
-      // Alertas de tarjetas y préstamos que vencen en 5 días o menos
+      // Alertas de deudas que vencen en 5 días o menos (y no han sido pagadas este mes)
       const urgentPayments = useMemo(() => {
+        const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
         return state.accounts
           .filter(a => (a.isCreditCard || a.isLoan) && a.dueDay)
+          .filter(a => parseFloat(a.cardDebt) > 0 && a.lastPaidMonth !== currentMonthStr)
           .map(a => {
             const daysLeft = getDaysUntilDue(a.dueDay);
             return { ...a, daysLeft };
@@ -281,7 +283,7 @@
         });
       }, [state.transactions, state.budgets, state.categories]);
 
-      // --- FILTRADO DE CONSULTAS: DOBLE ENTRADA VIRTUALIZADA PARA TRANSFERENCIAS (CORRECCIÓN) ---
+      // --- FILTRADO DE CONSULTAS: DOBLE ENTRADA VIRTUALIZADA PARA TRANSFERENCIAS ---
       const qResults = useMemo(() => {
         const list = [];
         state.transactions.forEach(t => {
@@ -290,7 +292,7 @@
             const matchTo = !qFilter.accountId || t.toId === qFilter.accountId;
             
             if (!qFilter.accountId) {
-              // Vista general (Todas las cuentas): Mostramos ambas partes del flujo para que no se pierdan datos de origen ni de destino
+              // Vista general (Todas las cuentas): Mostramos ambas partes del flujo
               list.push({
                 ...t,
                 id: `${t.id}_from`,
@@ -315,7 +317,7 @@
                 note: t.note || `Desde ${t.fromName}`
               });
             } else {
-              // Filtrado por cuenta específica: proyectamos el egreso o ingreso correspondiente
+              // Filtrado por cuenta específica
               if (matchFrom) {
                 list.push({
                   ...t,
@@ -344,7 +346,7 @@
               }
             }
           } else {
-            // Transacciones normales de gastos/ingresos
+            // Transacciones normales
             if (qFilter.categoryId && t.categoryId !== qFilter.categoryId) return;
             if (qFilter.accountId && t.accountId !== qFilter.accountId) return;
             
@@ -356,7 +358,6 @@
           }
         });
 
-        // Filtrado final por fechas
         return list.filter(t => {
           if (qFilter.from && t.date < qFilter.from) return false;
           if (qFilter.to && t.date > qFilter.to) return false;
@@ -364,7 +365,7 @@
         }).sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions, qFilter]);
 
-      // --- CÁLCULO DE GRÁFICO DE CATEGORÍAS (EGRESOS CON TRANSFERENCIAS INCLUIDAS) ---
+      // --- CÁLCULO DE GRÁFICO DE CATEGORÍAS ---
       const categoryChartData = useMemo(() => {
         const expenses = qResults.filter(t => t.virtualType === "expense");
         const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
@@ -399,7 +400,6 @@
         }).sort((a, b) => b.amount - a.amount);
       }, [qResults, state.categories]);
 
-      // Cálculo de los indicadores de consulta leyendo la proyección virtual
       const qIncome = useMemo(() => {
         return qResults.filter(t => t.virtualType === "income").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
       }, [qResults]);
@@ -453,7 +453,6 @@
         const acc = state.accounts.find(a => a.id === form.accountId);
         if (!acc) return;
 
-        // Validaciones por tipo de cuenta
         if (acc.isCreditCard) {
           if (formType === "expense" && acc.availableLimit < amt) {
             return showToast("Límite de crédito disponible insuficiente", "error");
@@ -508,7 +507,7 @@
         }
       }
 
-      // --- MODIFICAR TRANSACCIÓN REGISTRADA CON RECALCULO COMPLETO ---
+      // --- MODIFICAR TRANSACCIÓN REGISTRADA CON RECALCULO ---
       function handleOpenEditTx(t) {
         setEditingTx({
           id: t.id,
@@ -560,7 +559,7 @@
           return a;
         });
 
-        // 2. VALIDAR si la nueva cuenta tiene fondos o límite suficiente (solo si el tipo es un egreso/gasto)
+        // 2. VALIDAR fondos/límites en la nueva cuenta
         const targetAcc = updatedAccounts.find(a => a.id === editingTx.accountId);
         if (!targetAcc) return showToast("La cuenta seleccionada ya no existe", "error");
 
@@ -576,7 +575,7 @@
           }
         }
 
-        // 3. APLICAR EL NUEVO IMPACTO en la cuenta seleccionada
+        // 3. APLICAR EL NUEVO IMPACTO en la nueva cuenta
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === editingTx.accountId) {
             if (a.isCreditCard || a.isLoan) {
@@ -602,7 +601,7 @@
           return a;
         });
 
-        // 4. ACTUALIZAR EL HISTORIAL DE TRANSACCIONES
+        // 4. ACTUALIZAR HISTORIAL
         const updatedTransactions = state.transactions.map(t => {
           if (t.id === editingTx.id) {
             const categoryName = state.categories.find(c => c.id === editingTx.categoryId)?.name || t.categoryName;
@@ -630,6 +629,26 @@
         setState(updatedState);
         setEditingTx(null);
         showToast("Transacción modificada correctamente");
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
+
+      // --- MARCAR/DESMARCAR MANUALMENTE EL PAGO DE UN CICLO DE TARJETA ---
+      function toggleAccountPaymentStatus(accountId) {
+        const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+        const newAccounts = state.accounts.map(a => {
+          if (a.id === accountId) {
+            const alreadyPaid = a.lastPaidMonth === currentMonthStr;
+            return {
+              ...a,
+              lastPaidMonth: alreadyPaid ? "" : currentMonthStr
+            };
+          }
+          return a;
+        });
+        const updatedState = { ...state, accounts: newAccounts };
+        setState(updatedState);
+        const isNowPaid = newAccounts.find(a => a.id === accountId).lastPaidMonth === currentMonthStr;
+        showToast(isNowPaid ? "✓ Cuenta marcada como pagada este ciclo" : "Pago del ciclo desmarcado");
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
@@ -665,7 +684,7 @@
           return a;
         });
 
-        // 2. Revertir destino antiguo (quitar fondos transferidos anteriormente)
+        // 2. Revertir destino antiguo
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === originalTx.toId) {
             if (a.isCreditCard || a.isLoan) {
@@ -692,7 +711,7 @@
           }
         }
 
-        // 3. Aplicar nuevo origen (restar fondos nuevos)
+        // 3. Aplicar nuevo origen
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === editingTransfer.fromId) {
             if (a.isCreditCard || a.isLoan) {
@@ -706,13 +725,20 @@
           return a;
         });
 
-        // 4. Aplicar nuevo destino (sumar fondos nuevos)
+        // 4. Aplicar nuevo destino (Y MARCAR COMO PAGADA LA TARJETA AUTOMÁTICAMENTE)
+        const currentMonthStr = new Date().toISOString().slice(0, 7);
         updatedAccounts = updatedAccounts.map(a => {
           if (a.id === editingTransfer.toId) {
             if (a.isCreditCard || a.isLoan) {
               const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) - newAmount);
               const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
-              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+              return { 
+                ...a, 
+                cardDebt: newDebt, 
+                availableLimit: newAvailable, 
+                balance: -newDebt,
+                lastPaidMonth: currentMonthStr // Considerada pagada en el ciclo actual
+              };
             } else {
               return { ...a, balance: (parseFloat(a.balance) || 0) + newAmount };
             }
@@ -778,7 +804,8 @@
             cardDebt: debt,
             availableLimit: available,
             balance: -debt,
-            dueDay: parsedDueDay
+            dueDay: parsedDueDay,
+            lastPaidMonth: "" // Inicializa vacío
           };
 
           if (editAcc) {
@@ -946,7 +973,7 @@
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
 
-      // Registrar transferencia
+      // Registrar transferencia y MARCAR TARJETA COMO PAGADA
       function submitTransfer() {
         if (!trfForm.fromId || !trfForm.toId || !trfForm.amount) return showToast("Completa todos los campos", "error");
         if (trfForm.fromId === trfForm.toId) return showToast("Las cuentas deben ser diferentes", "error");
@@ -963,6 +990,7 @@
           if (fromAcc.balance < amt) return showToast("Saldo insuficiente", "error");
         }
 
+        const currentMonthStr = new Date().toISOString().slice(0, 7);
         const newAccounts = state.accounts.map(a => {
           if (a.id === trfForm.fromId) {
             if (a.isCreditCard || a.isLoan) {
@@ -977,7 +1005,13 @@
             if (a.isCreditCard || a.isLoan) {
               const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) - amt);
               const newAvailable = (parseFloat(a.availableLimit) || 0) + amt;
-              return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+              return { 
+                ...a, 
+                cardDebt: newDebt, 
+                availableLimit: newAvailable, 
+                balance: -newDebt,
+                lastPaidMonth: currentMonthStr // Marcada como pagada en el mes actual
+              };
             } else {
               return { ...a, balance: a.balance + amt };
             }
@@ -1004,7 +1038,7 @@
         const updatedState = { ...state, accounts: newAccounts, transactions: [...state.transactions, trfTx] };
         setState(updatedState);
         setTrfForm({ fromId: "", toId: "", amount: "", date: TODAY() });
-        showToast("¡Transferencia realizada con éxito!");
+        showToast("¡Transferencia y abono realizados con éxito!");
         setScreen("home");
 
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
@@ -1440,7 +1474,7 @@
             </div>
           )}
 
-          {/* MODAL EDITAR TRANSACCIÓN (CON SELECTOR DE CUENTAS) */}
+          {/* MODAL EDITAR TRANSACCIÓN */}
           {editingTx && (
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
               <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 w-full max-w-sm space-y-4">
@@ -2248,84 +2282,150 @@
               </div>
             )}
 
-            {/* PANTALLA: CALENDARIO DE PAGOS */}
-            {screen === "payments" && (
-              <div className="p-4 space-y-6">
-                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-2xl">📅</span>
-                    <div>
-                      <h3 className="font-extrabold text-base text-slate-200">Próximos Vencimientos</h3>
-                      <p className="text-xs text-slate-400 mt-0.5">Calendario de tarjetas de crédito y préstamos</p>
-                    </div>
-                  </div>
+            {/* PANTALLA: CALENDARIO DE PAGOS (REDISENO CON CLASIFICACION DE CICLOS) */}
+            {screen === "payments" && (() => {
+              const currentMonthStr = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+              const billAccounts = state.accounts.filter(a => (a.isCreditCard || a.isLoan) && a.dueDay);
+              
+              // Clasificar en deudas pendientes y completadas/liquidadas para el ciclo actual
+              const pendingBills = billAccounts.filter(a => parseFloat(a.cardDebt) > 0 && a.lastPaidMonth !== currentMonthStr);
+              const paidBills = billAccounts.filter(a => parseFloat(a.cardDebt) <= 0 || a.lastPaidMonth === currentMonthStr);
 
-                  <div className="space-y-3">
-                    {state.accounts.filter(a => (a.isCreditCard || a.isLoan) && a.dueDay).map(a => {
-                      const daysLeft = getDaysUntilDue(a.dueDay);
-                      const isAlert = daysLeft !== null && daysLeft <= 5;
+              return (
+                <div className="p-4 space-y-6">
+                  <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-6 space-y-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-2xl">📅</span>
+                      <div>
+                        <h3 className="font-extrabold text-base text-slate-200">Próximos Vencimientos</h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Control de tus tarjetas de crédito y préstamos</p>
+                      </div>
+                    </div>
+
+                    {/* SECCIÓN: PENDIENTES DE PAGO */}
+                    <div className="space-y-3">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-1.5 mb-1">
+                        <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                        Pendientes este Ciclo ({pendingBills.length})
+                      </h4>
                       
-                      return (
+                      {pendingBills.map(a => {
+                        const daysLeft = getDaysUntilDue(a.dueDay);
+                        const isAlert = daysLeft !== null && daysLeft <= 5;
+                        
+                        return (
+                          <div 
+                            key={a.id} 
+                            className={`p-4 rounded-2xl border transition-all ${
+                              isAlert 
+                                ? "bg-rose-950/20 border-rose-500/40 text-rose-200" 
+                                : "bg-[#0b0f19] border-[#1e293b]"
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <span className="font-bold text-sm block text-slate-200">{a.name}</span>
+                                <span className="text-xs text-slate-400 block mt-0.5">
+                                  {a.isCreditCard ? "Pago de Tarjeta" : "Amortización de Préstamo"} • Día {a.dueDay}
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                {daysLeft === 0 ? (
+                                  <span className="bg-rose-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full animate-soft-pulse">¡Paga Hoy!</span>
+                                ) : daysLeft <= 5 ? (
+                                  <span className="bg-rose-500/20 text-rose-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-rose-500/30 animate-soft-pulse">Vence en {daysLeft} d</span>
+                                ) : (
+                                  <span className="bg-slate-800 text-slate-400 text-[10px] font-medium px-2.5 py-0.5 rounded-full">Faltan {daysLeft} d</span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex justify-between items-end mt-4 pt-3 border-t border-slate-800/40">
+                              <div>
+                                <span className="text-[10px] text-slate-500 uppercase font-semibold">Deuda Pendiente</span>
+                                <span className="text-sm font-extrabold block text-rose-400">{maskAmount(a.cardDebt)}</span>
+                              </div>
+                              <div className="flex gap-2">
+                                {/* Botón para marcar manualmente como pagado */}
+                                <button 
+                                  onClick={() => toggleAccountPaymentStatus(a.id)}
+                                  className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-3 py-2 rounded-xl transition-all"
+                                  title="Marcar como pagado sin transferencia"
+                                >
+                                  ✓ Listo
+                                </button>
+                                <button 
+                                  onClick={() => {
+                                    setTrfForm({
+                                      fromId: state.accounts.find(x => !x.isCreditCard && !x.isLoan)?.id || "",
+                                      toId: a.id,
+                                      amount: a.cardDebt.toString(),
+                                      date: TODAY()
+                                    });
+                                    setScreen("transfers");
+                                  }}
+                                  className="bg-indigo-600/20 hover:bg-indigo-500/30 text-indigo-400 border border-indigo-500/30 text-[10px] font-bold px-3 py-2 rounded-xl transition-all"
+                                >
+                                  Pagar Deuda
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {pendingBills.length === 0 && (
+                        <div className="text-center text-slate-500 py-6 bg-[#0b0f19] rounded-2xl border border-dashed border-slate-800">
+                          <span className="text-2xl block mb-1">🎉</span>
+                          <p className="text-xs">¡Todo pagado! No tienes saldos vencidos este mes.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* SECCIÓN: COMPLETADOS / LIQUIDADOS */}
+                    <div className="space-y-2 pt-2 border-t border-slate-800/40">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-2">
+                        Completados / Sin saldo ({paidBills.length})
+                      </h4>
+                      
+                      {paidBills.map(a => (
                         <div 
                           key={a.id} 
-                          className={`p-4 rounded-2xl border transition-all ${
-                            isAlert 
-                              ? "bg-rose-950/20 border-rose-500/40 text-rose-200" 
-                              : "bg-[#0b0f19] border-[#1e293b]"
-                          }`}
+                          className="p-3.5 rounded-2xl border border-slate-800/60 bg-[#0b0f19]/40 text-slate-400 flex justify-between items-center transition-all hover:bg-[#0b0f19]/60"
                         >
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="font-bold text-sm block">{a.name}</span>
-                              <span className="text-xs text-slate-400 block mt-0.5">
-                                {a.isCreditCard ? "Pago Tarjeta" : "Pago Préstamo"} • Día {a.dueDay} de cada mes
-                              </span>
-                            </div>
-                            <div className="text-right">
-                              {daysLeft === 0 ? (
-                                <span className="bg-rose-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full animate-soft-pulse">¡Paga Hoy!</span>
-                              ) : daysLeft <= 5 ? (
-                                <span className="bg-rose-500/20 text-rose-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-rose-500/30 animate-soft-pulse">En {daysLeft} días</span>
-                              ) : (
-                                <span className="bg-slate-800 text-slate-400 text-[10px] font-medium px-2.5 py-0.5 rounded-full">Faltan {daysLeft} días</span>
-                              )}
-                            </div>
+                          <div>
+                            <span className="font-bold text-xs block text-slate-300">{a.name}</span>
+                            <span className="text-[10px] text-slate-500 block mt-0.5">
+                              {parseFloat(a.cardDebt) <= 0 
+                                ? "Sin saldo de deuda pendiente" 
+                                : `Pagado este mes (${fmt(a.cardDebt)} de deuda restante)`
+                              }
+                            </span>
                           </div>
-
-                          <div className="flex justify-between items-end mt-4 pt-3 border-t border-slate-800/40">
-                            <div>
-                              <span className="text-[10px] text-slate-500 uppercase font-semibold">Deuda Pendiente</span>
-                              <span className="text-sm font-extrabold block text-rose-400">{maskAmount(a.cardDebt)}</span>
-                            </div>
-                            <button 
-                              onClick={() => {
-                                setTrfForm({
-                                  fromId: state.accounts.find(x => !x.isCreditCard && !x.isLoan)?.id || "",
-                                  toId: a.id,
-                                  amount: a.cardDebt.toString(),
-                                  date: TODAY()
-                                });
-                                setScreen("transfers");
-                              }}
-                              className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 border border-indigo-500/30 text-xs font-bold px-4 py-2 rounded-xl transition-all"
-                            >
-                              Pagar Deuda
-                            </button>
+                          
+                          <div className="flex items-center gap-2">
+                            <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-extrabold px-2.5 py-1 rounded-full border border-emerald-500/20">
+                              ✓ Pagado
+                            </span>
+                            {/* Permitir deshacer el estado pagado para recuperar la alerta */}
+                            {a.lastPaidMonth === currentMonthStr && (
+                              <button 
+                                onClick={() => toggleAccountPaymentStatus(a.id)}
+                                className="text-xs text-rose-400 hover:text-rose-300 p-1 bg-rose-500/10 rounded-lg hover:bg-rose-500/20 transition-all"
+                                title="Desmarcar pago del mes"
+                              >
+                                ↩️
+                              </button>
+                            )}
                           </div>
                         </div>
-                      );
-                    })}
+                      ))}
+                    </div>
 
-                    {state.accounts.filter(a => (a.isCreditCard || a.isLoan) && a.dueDay).length === 0 && (
-                      <div className="text-center text-slate-500 py-6">
-                        <span className="text-3xl block mb-2">📅</span>
-                        <p className="text-xs">No tienes deudas configuradas con días de pago.</p>
-                      </div>
-                    )}
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* PANTALLA: PRESUPUESTOS Y GASTOS RECURRENTES */}
             {screen === "budgets" && (
@@ -3205,7 +3305,7 @@
     }
 
     const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
+    root.render(App ? <App /> : <div>Error cargando componente react</div>);
   </script>
 </body>
 </html>
