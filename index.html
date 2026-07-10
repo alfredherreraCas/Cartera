@@ -566,15 +566,7 @@
         }).sort((a, b) => b.amount - a.amount);
       }, [qResults, state.categories]);
 
-      const qIncome = useMemo(() => {
-        return qResults.filter(t => t.virtualType === "income").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
-      }, [qResults]);
-
-      const qExpense = useMemo(() => {
-        return qResults.filter(t => t.virtualType === "expense").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
-      }, [qResults]);
-// ... existing code ...
-      const qIncome = useMemo(() => {
+const qIncome = useMemo(() => {
         return qResults.filter(t => t.virtualType === "income").reduce((s, t) => s + Math.abs(t.displayAmount), 0);
       }, [qResults]);
 
@@ -626,9 +618,6 @@
       const catForType = useMemo(() => {
         return (state.categories || []).filter(c => c && c.type === formType);
       }, [state.categories, formType]);
-      const catForType = useMemo(() => {
-        return (state.categories || []).filter(c => c && c.type === formType);
-      }, [state.categories, formType]);
 
       // --- MANEJO DE NAVEGACIÓN ---
       function openScreen(s, type) {
@@ -646,6 +635,63 @@
         }
         setScreen(s);
       }
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button 
+                    onClick={exportToCSV}
+                    className="bg-[#1e293b] hover:bg-[#334155] text-[#38bdf8] font-bold text-xs py-3 px-4 rounded-xl transition-all flex items-center justify-center gap-1 border border-slate-700/50"
+                  >
+                    📊 Descargar CSV
+                  </button>
+                  <button 
+                    onClick={() => setScreen("print_preview")}
+                    className="bg-[#1e293b] hover:bg-[#334155] text-[#818cf8] font-bold text-xs py-3 px-4 rounded-xl transition-all flex items-center justify-center gap-1 border border-slate-700/50"
+                  >
+                    🖨️ Previsualizar PDF
+                  </button>
+                </div>
+
+                {/* RESUMEN DEL FILTRO Y ACUMULADOS */}
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider ml-1">
+                      Flujo de movimientos (Según filtros)
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="bg-[#121c17] p-3 rounded-2xl border border-emerald-500/15">
+                        <div className="text-emerald-400">Ingresos</div>
+                        <div className="font-bold mt-1 text-emerald-400">{fmt(qIncome)}</div>
+                      </div>
+                      <div className="bg-[#201416] p-3 rounded-2xl border border-rose-500/15">
+                        <div className="text-rose-400">Gastos</div>
+                        <div className="font-bold mt-1 text-rose-400">{fmt(qExpense)}</div>
+                      </div>
+                      <div className="bg-[#121c2c] p-3 rounded-2xl border border-blue-500/15">
+                        <div className="text-blue-400">Neto Periodo</div>
+                        <div className="font-bold mt-1 text-blue-400">{fmt(qIncome - qExpense)}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider ml-1 flex justify-between items-center">
+                      <span>Estado Acumulado {qFilter.accountId ? "(Cuenta Seleccionada)" : "(Global)"}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                      <div className="bg-[#121824] p-3 rounded-2xl border border-slate-700/50">
+                        <div className="text-slate-400">Saldo Inicial (Arrastre)</div>
+                        <div className="font-bold mt-1 text-slate-300">{fmt(accountBalanceContext - truePeriodNetForAccounts)}</div>
+                      </div>
+                      <div className="bg-[#121824] p-3 rounded-2xl border border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.05)]">
+                        <div className="text-indigo-400">Saldo Actual Total</div>
+                        <div className="font-bold mt-1 text-indigo-400">{fmt(accountBalanceContext)}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Listado con Botones de Modificación */}
+                <div className="space-y-2">
+                  {qResults.map(t => (
 
       // --- MÁSCARA DE PRIVACIDAD (SOLO EN HOME) ---
       function maskAmount(amountValue, isHome = true) {
