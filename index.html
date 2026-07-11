@@ -410,7 +410,45 @@
           return true;
         }).sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions, qFilter]);
+// --- CÁLCULOS: FLUJO Y ACUMULADOS PARA CONSULTAS ---
+		  const qIncome = useMemo(() => {
+			return qResults.filter(t => t.type === "income").reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
+		  }, [qResults]);
 
+		  const qExpense = useMemo(() => {
+			return qResults.filter(t => t.type === "expense").reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
+		  }, [qResults]);
+
+		  const accountBalanceContext = useMemo(() => {
+			let sum = 0;
+			const accs = qFilter.accountId ? (state.accounts || []).filter(a => a.id === qFilter.accountId) : (state.accounts || []);
+			accs.forEach(a => {
+			  if (!a.isCreditCard && !a.isLoan) sum += (parseFloat(a.balance) || 0);
+			  else sum -= (parseFloat(a.cardDebt) || 0);
+			});
+			return sum;
+		  }, [state.accounts, qFilter.accountId]);
+
+		  const truePeriodNetForAccounts = useMemo(() => {
+			let net = 0;
+			(state.transactions || []).forEach(t => {
+			  if (qFilter.accountId) {
+				if (t.type === "transfer") {
+				  if (t.toAccountId === qFilter.accountId) net += parseFloat(t.amount);
+				  if (t.accountId === qFilter.accountId) net -= parseFloat(t.amount);
+				} else {
+				  if (t.accountId === qFilter.accountId) {
+					if (t.type === "income") net += parseFloat(t.amount);
+					if (t.type === "expense") net -= parseFloat(t.amount);
+				  }
+				}
+			  } else {
+				if (t.type === "income") net += parseFloat(t.amount);
+				if (t.type === "expense") net -= parseFloat(t.amount);
+			  }
+			});
+			return net;
+		  }, [state.transactions, qFilter.accountId]);
       // --- CÁLCULO DE GRÁFICO DE CATEGORÍAS ---
       const categoryChartData = useMemo(() => {
         const expenses = qResults.filter(t => t.virtualType === "expense");
@@ -3186,7 +3224,45 @@
                   >
                     Borrar Filtros
                   </button>
-                </div>
+                // --- HTML PARA SECCIÓN CONSULTAS ---
+				  // (Asegúrate de que este bloque esté dentro de tu renderizado de 'queries')
+				  /* 
+				  <div className="bg-[#121824] p-4 rounded-3xl border border-slate-800 space-y-4">
+					<div className="space-y-2">
+					  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider ml-1">Flujo del Periodo Filtrado</div>
+					  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+						<div className="bg-emerald-500/10 p-2 rounded-xl border border-emerald-500/20">
+						  <div className="text-emerald-500 font-semibold">Ingreso</div>
+						  <div className="font-bold text-emerald-400">{fmt(qIncome)}</div>
+						</div>
+						<div className="bg-rose-500/10 p-2 rounded-xl border border-rose-500/20">
+						  <div className="text-rose-500 font-semibold">Gasto</div>
+						  <div className="font-bold text-rose-400">{fmt(qExpense)}</div>
+						</div>
+						<div className="bg-slate-800/50 p-2 rounded-xl border border-slate-700">
+						  <div className="text-slate-400 font-semibold">Neto</div>
+						  <div className="font-bold">{fmt(qIncome - qExpense)}</div>
+						</div>
+					  </div>
+					</div>
+					<hr className="border-slate-800" />
+					<div className="space-y-2">
+					  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider ml-1">Estado Acumulado</div>
+					  <div className="grid grid-cols-2 gap-2 text-center text-xs">
+						<div className="bg-slate-800/30 p-2 rounded-xl border border-slate-700/50">
+						  <div className="text-slate-500 font-semibold">Saldo Inicial (Arrastre)</div>
+						  <div className="text-slate-300 font-medium">{fmt(accountBalanceContext - truePeriodNetForAccounts)}</div>
+						</div>
+						<div className="bg-indigo-500/10 p-2 rounded-xl border border-indigo-500/30">
+						  <div className="text-indigo-400 font-semibold">Saldo Final Actual</div>
+						  <div className="text-indigo-300 font-bold text-sm">{fmt(accountBalanceContext)}</div>
+						</div>
+					  </div>
+					</div>
+				  </div> 
+				  */
+							
+				</div>
 
                 {/* GRÁFICO DE CATEGORÍAS AUTOMÁTICO */}
                 {categoryChartData.length > 0 && (
