@@ -398,6 +398,12 @@
           return { categoryId: catId, name, amount: aggregated[catId], pct: totalExpense > 0 ? (aggregated[catId] / totalExpense) * 100 : 0, color: colorPalette[index % colorPalette.length] };
         }).sort((a, b) => b.amount - a.amount);
       }, [qResults, state.categories]);
+
+       // Filtrar categorías según el tipo de formulario abierto
+      const catForType = useMemo(() => {
+        return state.categories.filter(c => c.type === formType);
+      }, [state.categories, formType]);
+      
       // --- MANEJO DE NAVEGACIÓN ---
       function openScreen(s, type) {
         setMenuOpen(false);
