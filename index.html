@@ -3273,7 +3273,7 @@
               </div>
             )}
 
-           {/* PANTALLA: CONSULTAS Y FILTROS */}
+         {/* PANTALLA: CONSULTAS Y FILTROS */}
             {screen === "queries" && (
               <div className="p-4 pb-24 space-y-4 animate-in fade-in zoom-in duration-300">
                 
@@ -3327,8 +3327,6 @@
                     
                     <div className="space-y-4 mt-4">
                       {categoryChartData.map(c => {
-                        
-                        // RENDERIZADO ESPECIAL PARA EL GRUPO DE DEUDAS
                         if (c.categoryId === "__debt_payments__") {
                           return (
                             <div key={c.categoryId} className="space-y-1 bg-rose-950/10 p-2.5 rounded-2xl border border-rose-500/10">
@@ -3351,7 +3349,6 @@
                                 />
                               </div>
                               
-                              {/* SUB-ITEMS DESPLEGABLES */}
                               {expandedDebt && (
                                 <div className="pl-6 pr-1 pt-3 pb-1 space-y-2.5 border-l-2 border-rose-500/20 ml-2.5 mt-2 animate-in slide-in-from-top-2">
                                   {c.subItems.map(sub => (
@@ -3374,7 +3371,6 @@
                           );
                         }
 
-                        // RENDERIZADO NORMAL PARA LAS DEMÁS CATEGORÍAS
                         return (
                           <div key={c.categoryId} className="space-y-1 px-1">
                             <div className="flex justify-between items-center text-xs">
@@ -3527,6 +3523,8 @@
                     </div>
                   )}
                 </div>
+              </div>
+            )}
 
             {/* PANTALLA: PREVISUALIZADOR DE PDF INTEGRADO */}
             {screen === "print_preview" && (
