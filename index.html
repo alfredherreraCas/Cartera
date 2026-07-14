@@ -3299,7 +3299,7 @@
                   </div>
                 </div>
 
-                {/* RESUMEN DE FLUJO (Saldos inicial/final removidos) */}
+                {/* RESUMEN DE FLUJO */}
                 <div className="bg-[#121824] p-5 rounded-3xl border border-slate-700 shadow-xl space-y-5">
                   <div className="space-y-2">
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">📊 Flujo del Periodo</div>
@@ -3410,7 +3410,6 @@
                 <div className="space-y-2">
                   {groupedQResults.map(item => {
                     
-                    // --- RENDERIZADO AGRUPADO PARA TRANSFERENCIAS ---
                     if (item.isGroup) {
                       const t = item.originalTx;
                       const isExp = expandedTrf[t.id];
@@ -3418,7 +3417,6 @@
                       return (
                         <div key={item.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 transition-all hover:border-slate-800">
                           
-                          {/* Encabezado Principal (Resumen) */}
                           <div 
                             className="flex items-center justify-between cursor-pointer select-none"
                             onClick={() => setExpandedTrf(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
@@ -3430,10 +3428,9 @@
                                 </span>
                                 Transferencia
                                 
-                                {/* Botones de acción unificados */}
                                 <button 
                                   onClick={(e) => {
-                                    e.stopPropagation(); // Evita que se expanda al dar clic al botón
+                                    e.stopPropagation(); 
                                     setEditingTransfer({
                                       id: t.id,
                                       fromId: t.fromId,
@@ -3465,7 +3462,6 @@
                             </div>
                           </div>
 
-                          {/* Partes desglosadas al expandir (Ingreso y Salida) */}
                           {isExp && (
                             <div className="pl-7 pr-2 pt-3 mt-3 space-y-2 border-t border-slate-700/50 animate-in slide-in-from-top-2">
                               {item.parts.map(part => (
@@ -3485,7 +3481,6 @@
                       );
                     }
 
-                    // --- RENDERIZADO NORMAL (Ingreso / Egreso regular) ---
                     const t = item;
                     return (
                       <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-slate-800">
