@@ -180,6 +180,7 @@
       const [showBreakdown, setShowBreakdown] = useState(false);
       const [breakdownTab, setBreakdownTab] = useState("debit"); // debit | credit | loan
       const [expandedDebt, setExpandedDebt] = useState(false); // Controla el desplegable de deudas
+      const [expandedTrf, setExpandedTrf] = useState({}); // Controla qué transferencias están desplegadas
       const [toast, setToast] = useState(null);
 
       // --- OPCIONES DE PRIVACIDAD Y SEGURIDAD ---
@@ -451,12 +452,34 @@
             subItems: subItems
           });
         }
-
-        return finalData.sort((a, b) => b.amount - a.amount);
-      }, [qResults, state.categories, state.accounts]);
+  // Agrupar resultados para evitar duplicidad visual de transferencias en la lista
+        const groupedQResults = useMemo(() => {
+          const list = [];
+          const seen = new Set();
+          qResults.forEach(t => {
+            if (t.categoryId === "__transfer__") {
+              // Obtener el ID original quitando _from o _to
+              const baseId = t.id.replace("_from", "").replace("_to", "");
+              if (!seen.has(baseId)) {
+                seen.add(baseId);
+                const originalTx = state.transactions.find(x => x.id === baseId);
+                if (originalTx) {
+                  // Buscar las mitades que existan actualmente en el filtro
+                  const parts = qResults.filter(x => x.id.replace("_from", "").replace("_to", "") === baseId);
+                  list.push({ isGroup: true, id: baseId, date: originalTx.date, originalTx, parts });
+                }
+              }
+            } else {
+              list.push(t);
+            }
+          });
+          return list;
+        }, [qResults, state.transactions]);
+          return finalData.sort((a, b) => b.amount - a.amount);
+        }, [qResults, state.categories, state.accounts]);
 
        // Filtrar categorías según el tipo de formulario abierto
-      const catForType = useMemo(() => {
+  {/* Listado de Transac    const catForType = useMemo(() => {
         return state.categories.filter(c => c.type === formType);
       }, [state.categories, formType]);
       
@@ -3387,14 +3410,92 @@
                   </button>
                 </div>
 
-                {/* Listado de Transacciones */}
+                {/* Listado de Transacciones agrupadas */}
                 <div className="space-y-2">
-                  {qResults.map(t => (
-                    <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-slate-800">
-                      <div>
-                        <div className="font-semibold text-sm text-slate-200 flex items-center gap-2">
-                          {t.categoryName}
-                          {t.type !== "transfer" ? (
+                  {groupedQResults.map(item => {
+                    
+                    // --- RENDERIZADO AGRUPADO PARA TRANSFERENCIAS ---
+                    if (item.isGroup) {
+                      const t = item.originalTx;
+                      const isExp = expandedTrf[t.id];
+                      
+                      return (
+                        <div key={item.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 transition-all hover:border-slate-800">
+                          
+                          {/* Encabezado Principal (Resumen) */}
+                          <div 
+                            className="flex items-center justify-between cursor-pointer select-none"
+                            onClick={() => setExpandedTrf(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
+                          >
+                            <div>
+                              <div className="font-semibold text-sm text-slate-200 flex items-center gap-2">
+                                <span className="bg-indigo-500/20 text-indigo-400 w-5 h-5 rounded flex items-center justify-center text-[10px] transition-transform">
+                                  {isExp ? "▼" : "▶"}
+                                </span>
+                                Transferencia
+                                
+                                {/* Botones de acción unificados */}
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation(); // Evita que se expanda al dar clic al botón
+                                    setEditingTransfer({
+                                      id: t.id,
+                                      fromId: t.fromId,
+                                      toId: t.toId,
+                                      amount: t.amount.toString(),
+                                      date: t.date,
+                                      note: t.note || ""
+                                    });
+                                  }}
+                                  className="text-[10px] px-2 py-1 text-indigo-400 hover:bg-indigo-500/20 transition-all bg-indigo-500/10 rounded-md ml-1"
+                                >
+                                  ✏️ Editar
+                                </button>
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteTx(t.id);
+                                  }}
+                                  className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/20 transition-all bg-rose-500/10 rounded-md"
+                                >
+                                  🗑️ Eliminar
+                                </button>
+                              </div>
+                              <div className="text-[11px] text-slate-500 mt-1.5">{t.fromName} ➔ {t.toName} • {t.date}</div>
+                              {t.note && <div className="text-xs text-slate-400 italic mt-0.5">"{t.note}"</div>}
+                            </div>
+                            <div className="font-bold text-sm text-indigo-400">
+                              {fmt(t.amount)}
+                            </div>
+                          </div>
+
+                          {/* Partes desglosadas al expandir (Ingreso y Salida) */}
+                          {isExp && (
+                            <div className="pl-7 pr-2 pt-3 mt-3 space-y-2 border-t border-slate-700/50 animate-in slide-in-from-top-2">
+                              {item.parts.map(part => (
+                                <div key={part.id} className="flex justify-between items-center text-xs">
+                                  <div>
+                                    <span className="text-slate-300 font-semibold">{part.categoryName}</span>
+                                    <span className="text-slate-500 text-[10px] ml-2">({part.accountName})</span>
+                                  </div>
+                                  <div className={`font-bold ${part.virtualType === "income" ? "text-emerald-400" : "text-rose-400"}`}>
+                                    {part.virtualType === "income" ? "+" : "-"}{fmt(Math.abs(part.displayAmount))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // --- RENDERIZADO NORMAL (Ingreso / Egreso regular) ---
+                    const t = item;
+                    return (
+                      <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-slate-800">
+                        <div>
+                          <div className="font-semibold text-sm text-slate-200 flex items-center gap-2">
+                            {t.categoryName}
                             <button 
                               onClick={() => handleOpenEditTx(t)}
                               className="text-xs p-1 text-indigo-400 hover:text-indigo-300 transition-all bg-indigo-500/10 rounded-md"
@@ -3402,53 +3503,30 @@
                             >
                               ✏️ Editar
                             </button>
-                          ) : (
                             <button 
-                              onClick={() => {
-                                const origId = t.id.replace("_from", "").replace("_to", "");
-                                const origTrf = state.transactions.find(x => x.id === origId);
-                                if (origTrf) {
-                                  setEditingTransfer({
-                                    id: origTrf.id,
-                                    fromId: origTrf.fromId,
-                                    toId: origTrf.toId,
-                                    amount: origTrf.amount.toString(),
-                                    date: origTrf.date,
-                                    note: origTrf.note || ""
-                                  });
-                                }
-                              }}
-                              className="text-xs p-1 text-indigo-400 hover:text-indigo-300 transition-all bg-indigo-500/10 rounded-md"
-                              title="Modificar transferencia"
+                              onClick={() => handleDeleteTx(t.id)}
+                              className="text-xs p-1 text-rose-400 hover:text-rose-300 transition-all bg-rose-500/10 rounded-md"
+                              title="Eliminar transacción"
                             >
-                              ✏️ Editar
+                              🗑️ Eliminar
                             </button>
-                          )}
-                          <button 
-                            onClick={() => handleDeleteTx(t.id)}
-                            className="text-xs p-1 text-rose-400 hover:text-rose-300 transition-all bg-rose-500/10 rounded-md"
-                            title="Eliminar transacción"
-                          >
-                            🗑️ Eliminar
-                          </button>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-1">{t.accountName} • {t.date}</div>
+                          {t.note && <div className="text-xs text-slate-400 italic mt-0.5">"{t.note}"</div>}
                         </div>
-                        <div className="text-[11px] text-slate-500">{t.accountName} • {t.date}</div>
-                        {t.note && <div className="text-xs text-slate-400 italic mt-1">"{t.note}"</div>}
+                        <div className={`font-bold text-sm ${t.virtualType === "income" ? "text-emerald-400" : "text-rose-400"}`}>
+                          {t.virtualType === "income" ? "+" : "-"}{fmt(Math.abs(t.displayAmount))}
+                        </div>
                       </div>
-                      <div className={`font-bold text-sm ${t.virtualType === "income" ? "text-emerald-400" : "text-rose-400"}`}>
-                        {t.virtualType === "income" ? "+" : "-"}{fmt(Math.abs(t.displayAmount))}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
-                  {qResults.length === 0 && (
+                  {groupedQResults.length === 0 && (
                     <div className="text-center text-slate-500 py-10">
                       No hay transacciones registradas que coincidan con los filtros.
                     </div>
                   )}
                 </div>
-              </div>
-            )}
 
             {/* PANTALLA: PREVISUALIZADOR DE PDF INTEGRADO */}
             {screen === "print_preview" && (
