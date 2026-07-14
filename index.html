@@ -813,6 +813,65 @@
         showToast("¡Transferencia modificada con éxito!");
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
+      // --- ELIMINAR TRANSACCIÓN Y REVERTIR SALDOS ---
+      function handleDeleteTx(id) {
+        if (!window.confirm("¿Estás seguro de eliminar este movimiento? Se revertirá el saldo en tus cuentas.")) return;
+
+        // Limpiar sufijos virtuales en caso de que se elimine desde Consultas
+        const realId = id.replace("_from", "").replace("_to", "");
+        const tx = state.transactions.find(t => t.id === realId);
+        if (!tx) return;
+
+        let updatedAccounts = [...state.accounts];
+
+        if (tx.type === "transfer") {
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.fromId) {
+              if (a.isCreditCard || a.isLoan) {
+                const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) - tx.amount);
+                const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+                return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+              } else {
+                return { ...a, balance: (parseFloat(a.balance) || 0) + tx.amount };
+              }
+            }
+            if (a.id === tx.toId) {
+              if (a.isCreditCard || a.isLoan) {
+                const newDebt = (parseFloat(a.cardDebt) || 0) + tx.amount;
+                const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+                return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+              } else {
+                return { ...a, balance: (parseFloat(a.balance) || 0) - tx.amount };
+              }
+            }
+            return a;
+          });
+        } else {
+          updatedAccounts = updatedAccounts.map(a => {
+            if (a.id === tx.accountId) {
+              if (a.isCreditCard || a.isLoan) {
+                const isExpense = tx.type === "expense";
+                const debtAdj = isExpense ? -tx.amount : tx.amount; 
+                const newDebt = Math.max(0, (parseFloat(a.cardDebt) || 0) + debtAdj);
+                const newAvailable = (parseFloat(a.totalLimit) || 0) - newDebt;
+                return { ...a, cardDebt: newDebt, availableLimit: newAvailable, balance: -newDebt };
+              } else {
+                const isExpense = tx.type === "expense";
+                const balAdj = isExpense ? tx.amount : -tx.amount;
+                return { ...a, balance: (parseFloat(a.balance) || 0) + balAdj };
+              }
+            }
+            return a;
+          });
+        }
+
+        const updatedTransactions = state.transactions.filter(t => t.id !== realId);
+        const updatedState = { ...state, accounts: updatedAccounts, transactions: updatedTransactions };
+        
+        setState(updatedState);
+        showToast("🗑️ Movimiento eliminado");
+        if (syncStatus === "connected") autoSyncToDrive(updatedState);
+      }
 
       // Agregar o editar cuenta
       function submitAccount() {
@@ -2100,6 +2159,7 @@
                   <div className="space-y-2">
                     {recentTx.map(t => (
                       <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-[#2a364f]">
+                        
                         <div className="flex items-center gap-3">
                           <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold ${
                             t.type === "income" ? "bg-emerald-500/10 text-emerald-400" :
@@ -2114,18 +2174,53 @@
                           </div>
                         </div>
 
-                        <div className={`font-bold text-sm tracking-tight ${
-                          t.type === "income" ? "text-emerald-400" : 
-                          t.type === "transfer" ? "text-blue-400" : "text-rose-400"
-                        }`}>
-                          {t.type === "income" ? "+" : t.type === "transfer" ? "" : "-"}{maskAmount(t.amount)}
+                        {/* Cantidad y Botones agrupados a la derecha */}
+                        <div className="flex flex-col items-end gap-2">
+                          <div className={`font-bold text-sm tracking-tight ${
+                            t.type === "income" ? "text-emerald-400" : 
+                            t.type === "transfer" ? "text-blue-400" : "text-rose-400"
+                          }`}>
+                            {t.type === "income" ? "+" : t.type === "transfer" ? "" : "-"}{maskAmount(t.amount)}
+                          </div>
+                          
+                          <div className="flex gap-1.5">
+                            {t.type !== "transfer" ? (
+                              <button 
+                                onClick={() => handleOpenEditTx(t)}
+                                className="text-[10px] px-2.5 py-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 rounded-md transition-all"
+                                title="Editar"
+                              >✏️ Editar</button>
+                            ) : (
+                              <button 
+                                onClick={() => {
+                                  setEditingTransfer({
+                                    id: t.id,
+                                    fromId: t.fromId,
+                                    toId: t.toId,
+                                    amount: t.amount.toString(),
+                                    date: t.date,
+                                    note: t.note || ""
+                                  });
+                                }}
+                                className="text-[10px] px-2.5 py-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 rounded-md transition-all"
+                                title="Editar Transferencia"
+                              >✏️ Editar</button>
+                            )}
+                            <button 
+                              onClick={() => handleDeleteTx(t.id)}
+                              className="text-[10px] px-2.5 py-1.5 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-md transition-all"
+                              title="Eliminar"
+                            >🗑️ Eliminar</button>
+                          </div>
                         </div>
+
                       </div>
                     ))}
+                    {recentTx.length === 0 && (
+                       <div className="text-center text-slate-500 text-xs py-4">No hay movimientos recientes.</div>
+                    )}
                   </div>
                 </div>
-
-              </div>
             )}
 
             {/* PANTALLA: GESTIONAR CUENTAS */}
@@ -3258,6 +3353,13 @@
                               ✏️ Editar
                             </button>
                           )}
+                          <button 
+                            onClick={() => handleDeleteTx(t.id)}
+                            className="text-xs p-1 text-rose-400 hover:text-rose-300 transition-all bg-rose-500/10 rounded-md"
+                            title="Eliminar transacción"
+                          >
+                            🗑️ Eliminar
+                          </button>
                         </div>
                         <div className="text-[11px] text-slate-500">{t.accountName} • {t.date}</div>
                         {t.note && <div className="text-xs text-slate-400 italic mt-1">"{t.note}"</div>}
@@ -3274,7 +3376,6 @@
                     </div>
                   )}
                 </div>
-              </div>
             )}
 
             {/* PANTALLA: PREVISUALIZADOR DE PDF INTEGRADO */}
