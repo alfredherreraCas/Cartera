@@ -387,6 +387,7 @@
         return net;
       }, [state.transactions, qFilter.accountId]);
 
+      // --- GRÁFICO DE CATEGORÍAS (CON LÓGICA DE PAGOS A TARJETA) ---
       const categoryChartData = useMemo(() => {
         const expenses = qResults.filter(t => t.virtualType === "expense");
         const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
@@ -396,13 +397,12 @@
           let catId = t.categoryId;
           
           // LÓGICA INTELIGENTE: Si el gasto es virtualizado por una transferencia
-          if (t.type === "transfer" && t.virtualType === "expense") {
+         if (t.type === "transfer" && t.virtualType === "expense") {
             const toAccount = state.accounts.find(a => a.id === t.toId);
-            // Si mandaste dinero a una cuenta de crédito/préstamo, es un PAGO DE DEUDA
             if (toAccount && (toAccount.isCreditCard || toAccount.isLoan)) {
-              catId = `__payment_${t.toId}`; // Se agrupa por la tarjeta específica que pagaste
+              catId = `__payment_${t.toId}`; 
             } else {
-              catId = "__transfer_regular__"; // Se agrupa como movimiento interno de efectivo
+              catId = "__transfer_regular__"; 
             }
           }
           
@@ -415,7 +415,7 @@
           let name = "Otros";
           
           // Asignamos nombres amigables basados en la nueva clasificación
-          if (catId.startsWith("__payment_")) {
+         if (catId.startsWith("__payment_")) {
             const accId = catId.replace("__payment_", "");
             const acc = state.accounts.find(a => a.id === accId);
             name = `Pago a ${acc ? acc.name : 'Deuda'}`;
@@ -3134,7 +3134,7 @@
               </div>
             )}
 
-            {/* PANTALLA: CONSULTAS Y FILTROS */}
+           {/* PANTALLA: CONSULTAS Y FILTROS */}
             {screen === "queries" && (
               <div className="p-4 pb-24 space-y-4 animate-in fade-in zoom-in duration-300">
                 
@@ -3160,7 +3160,7 @@
                   </div>
                 </div>
 
-                {/* RESUMEN DE FLUJO (Saldos ocultos) */}
+                {/* RESUMEN DE FLUJO (Saldos inicial/final removidos) */}
                 <div className="bg-[#121824] p-5 rounded-3xl border border-slate-700 shadow-xl space-y-5">
                   <div className="space-y-2">
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">📊 Flujo del Periodo</div>
@@ -3177,20 +3177,6 @@
                         <div className="text-slate-400 font-semibold uppercase">Neto</div>
                         <div className="font-bold text-white mt-1">{fmt(qIncome - qExpense)}</div>
                       </div>
-                    </div>
-                  </div>
-                </div>
-
-                  <div className="h-px bg-slate-700/50"></div>
-
-                  <div className="grid grid-cols-2 gap-3 text-center">
-                    <div className="bg-slate-800/30 p-4 rounded-2xl border border-slate-700/50">
-                      <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Saldo Inicial (Arrastre)</div>
-                      <div className="text-sm font-bold text-slate-200">{fmt(accountBalanceContext - truePeriodNetForAccounts)}</div>
-                    </div>
-                    <div className="bg-indigo-500/10 p-4 rounded-2xl border border-indigo-500/30">
-                      <div className="text-[10px] text-indigo-400 font-bold uppercase mb-1">Saldo Final Actual</div>
-                      <div className="text-sm font-black text-indigo-300">{fmt(accountBalanceContext)}</div>
                     </div>
                   </div>
                 </div>
@@ -3235,7 +3221,7 @@
                   </button>
                 </div>
 
-                {/* Listado con Botones de Modificación / Edición de Transacciones y Transferencias */}
+                {/* Listado de Transacciones */}
                 <div className="space-y-2">
                   {qResults.map(t => (
                     <div key={t.id} className="bg-[#121824] border border-[#1e293b] rounded-2xl p-4 flex items-center justify-between transition-all hover:border-slate-800">
