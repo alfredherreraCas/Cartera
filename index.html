@@ -391,13 +391,49 @@
         const expenses = qResults.filter(t => t.virtualType === "expense");
         const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
         const aggregated = {};
-        expenses.forEach(t => { aggregated[t.categoryId] = (aggregated[t.categoryId] || 0) + Math.abs(t.displayAmount); });
+        
+        expenses.forEach(t => { 
+          let catId = t.categoryId;
+          
+          // LÓGICA INTELIGENTE: Si el gasto es virtualizado por una transferencia
+          if (t.type === "transfer" && t.virtualType === "expense") {
+            const toAccount = state.accounts.find(a => a.id === t.toId);
+            // Si mandaste dinero a una cuenta de crédito/préstamo, es un PAGO DE DEUDA
+            if (toAccount && (toAccount.isCreditCard || toAccount.isLoan)) {
+              catId = `__payment_${t.toId}`; // Se agrupa por la tarjeta específica que pagaste
+            } else {
+              catId = "__transfer_regular__"; // Se agrupa como movimiento interno de efectivo
+            }
+          }
+          
+          aggregated[catId] = (aggregated[catId] || 0) + Math.abs(t.displayAmount); 
+        });
+
         const colorPalette = ["#6366f1", "#ec4899", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#f43f5e", "#06b6d4", "#14b8a6", "#a855f7"];
+        
         return Object.keys(aggregated).map((catId, index) => {
-          let name = catId === "__transfer__" ? "Transferencia (Salida)" : (state.categories.find(c => c.id === catId)?.name || "Otros");
-          return { categoryId: catId, name, amount: aggregated[catId], pct: totalExpense > 0 ? (aggregated[catId] / totalExpense) * 100 : 0, color: colorPalette[index % colorPalette.length] };
+          let name = "Otros";
+          
+          // Asignamos nombres amigables basados en la nueva clasificación
+          if (catId.startsWith("__payment_")) {
+            const accId = catId.replace("__payment_", "");
+            const acc = state.accounts.find(a => a.id === accId);
+            name = `Pago a ${acc ? acc.name : 'Deuda'}`;
+          } else if (catId === "__transfer_regular__") {
+            name = "Transferencia (Entre mis cuentas)";
+          } else {
+            name = state.categories.find(c => c.id === catId)?.name || "Otros";
+          }
+
+          return { 
+            categoryId: catId, 
+            name, 
+            amount: aggregated[catId], 
+            pct: totalExpense > 0 ? (aggregated[catId] / totalExpense) * 100 : 0, 
+            color: colorPalette[index % colorPalette.length] 
+          };
         }).sort((a, b) => b.amount - a.amount);
-      }, [qResults, state.categories]);
+      }, [qResults, state.categories, state.accounts]);
 
        // Filtrar categorías según el tipo de formulario abierto
       const catForType = useMemo(() => {
@@ -3124,7 +3160,7 @@
                   </div>
                 </div>
 
-                {/* RESUMEN DE SALDOS */}
+                {/* RESUMEN DE FLUJO (Saldos ocultos) */}
                 <div className="bg-[#121824] p-5 rounded-3xl border border-slate-700 shadow-xl space-y-5">
                   <div className="space-y-2">
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">📊 Flujo del Periodo</div>
@@ -3143,6 +3179,7 @@
                       </div>
                     </div>
                   </div>
+                </div>
 
                   <div className="h-px bg-slate-700/50"></div>
 
