@@ -389,7 +389,7 @@
         return net;
       }, [state.transactions, qFilter.accountId]);
 
-    // 5. Gráfico de categorías (Con agrupación inteligente de deudas)
+      // 5. Gráfico de categorías (Con agrupación inteligente de deudas)
       const categoryChartData = useMemo(() => {
         const expenses = qResults.filter(t => t.virtualType === "expense");
         const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
@@ -858,6 +858,7 @@
         showToast("¡Transferencia modificada con éxito!");
         if (syncStatus === "connected") autoSyncToDrive(updatedState);
       }
+
       // --- ELIMINAR TRANSACCIÓN Y REVERTIR SALDOS ---
       function handleDeleteTx(id) {
         if (!window.confirm("¿Estás seguro de eliminar este movimiento? Se revertirá el saldo en tus cuentas.")) return;
@@ -1351,6 +1352,10 @@
         setSyncStatus("disconnected");
         showToast("Desconectado de Google Drive", "warning");
       };
+      
+      // Alias temporal para handleSyncLogin y handleSyncLogout en la UI
+      const handleSyncLogin = connectGoogleDrive;
+      const handleSyncLogout = disconnectGoogleDrive;
 
       const findOrCreateDriveFile = async (token) => {
         try {
@@ -2269,6 +2274,7 @@
 
               </div>
             )}
+            
             {/* PANTALLA: GESTIONAR CUENTAS */}
             {screen === "accounts" && (
               <div className="p-4 space-y-6">
@@ -3706,11 +3712,11 @@
             ))}
           </nav>
         </div>
-       );
-  }
+      );
+    }
 
-  const root = ReactDOM.createRoot(document.getElementById("root"));
-  root.render(<App />);
-</script>
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
 </body>
-</html> 
+</html>
