@@ -389,7 +389,7 @@
         return net;
       }, [state.transactions, qFilter.accountId]);
 
-     // 5. Gráfico de categorías (Con agrupación inteligente de deudas)
+    // 5. Gráfico de categorías (Con agrupación inteligente de deudas)
       const categoryChartData = useMemo(() => {
         const expenses = qResults.filter(t => t.virtualType === "expense");
         const totalExpense = expenses.reduce((s, t) => s + Math.abs(t.displayAmount), 0);
@@ -452,34 +452,36 @@
             subItems: subItems
           });
         }
-  // Agrupar resultados para evitar duplicidad visual de transferencias en la lista
-        const groupedQResults = useMemo(() => {
-          const list = [];
-          const seen = new Set();
-          qResults.forEach(t => {
-            if (t.categoryId === "__transfer__") {
-              // Obtener el ID original quitando _from o _to
-              const baseId = t.id.replace("_from", "").replace("_to", "");
-              if (!seen.has(baseId)) {
-                seen.add(baseId);
-                const originalTx = state.transactions.find(x => x.id === baseId);
-                if (originalTx) {
-                  // Buscar las mitades que existan actualmente en el filtro
-                  const parts = qResults.filter(x => x.id.replace("_from", "").replace("_to", "") === baseId);
-                  list.push({ isGroup: true, id: baseId, date: originalTx.date, originalTx, parts });
-                }
-              }
-            } else {
-              list.push(t);
-            }
-          });
-          return list;
-        }, [qResults, state.transactions]);
-          return finalData.sort((a, b) => b.amount - a.amount);
-        }, [qResults, state.categories, state.accounts]);
+        
+        return finalData.sort((a, b) => b.amount - a.amount);
+      }, [qResults, state.categories, state.accounts]);
 
-       // Filtrar categorías según el tipo de formulario abierto
-  {/* Listado de Transac    const catForType = useMemo(() => {
+      // Agrupar resultados para evitar duplicidad visual de transferencias en la lista
+      const groupedQResults = useMemo(() => {
+        const list = [];
+        const seen = new Set();
+        qResults.forEach(t => {
+          if (t.categoryId === "__transfer__") {
+            // Obtener el ID original quitando _from o _to
+            const baseId = t.id.replace("_from", "").replace("_to", "");
+            if (!seen.has(baseId)) {
+              seen.add(baseId);
+              const originalTx = state.transactions.find(x => x.id === baseId);
+              if (originalTx) {
+                // Buscar las mitades que existan actualmente en el filtro
+                const parts = qResults.filter(x => x.id.replace("_from", "").replace("_to", "") === baseId);
+                list.push({ isGroup: true, id: baseId, date: originalTx.date, originalTx, parts });
+              }
+            }
+          } else {
+            list.push(t);
+          }
+        });
+        return list;
+      }, [qResults, state.transactions]);
+
+      // Filtrar categorías según el tipo de formulario abierto
+      const catForType = useMemo(() => {
         return state.categories.filter(c => c.type === formType);
       }, [state.categories, formType]);
       
@@ -510,69 +512,7 @@
 
       // Registrar transacción
       function submitTransaction() {
-        if (!form.amount || !form.accountId || !form.categoryId) {
-          return showToast("Completa todos los campos requeridos", "error");
-        }
-        const amt = parseFloat(form.amount);
-        if (isNaN(amt) || amt <= 0) return showToast("Monto inválido", "error");
-        
-        const acc = state.accounts.find(a => a.id === form.accountId);
-        if (!acc) return;
-
-        if (acc.isCreditCard) {
-          if (formType === "expense" && acc.availableLimit < amt) {
-            return showToast("Límite de crédito disponible insuficiente", "error");
-          }
-        } else if (acc.isLoan) {
-          if (formType === "expense" && acc.availableLimit < amt) {
-            return showToast("Límite del préstamo o monto disponible insuficiente", "error");
-          }
-        } else {
-          if (formType === "expense" && acc.balance < amt) {
-            return showToast("Saldo insuficiente en esa cuenta", "error");
-          }
-        }
-
-        const newTx = {
-          id: Date.now().toString(),
-          type: formType,
-          amount: amt,
-          accountId: form.accountId,
-          categoryId: form.categoryId,
-          note: form.note,
-          date: form.date,
-          accountName: acc.name,
-          categoryName: state.categories.find(c => c.id === form.categoryId)?.name || "Sin categoría",
-        };
-
-        const newAccounts = state.accounts.map(a => {
-          if (a.id === form.accountId) {
-            if (a.isCreditCard || a.isLoan) {
-              const newDebt = formType === "expense" ? (parseFloat(a.cardDebt) || 0) + amt : Math.max(0, (parseFloat(a.cardDebt) || 0) - amt);
-              const newAvailable = formType === "expense" ? (parseFloat(a.availableLimit) || 0) - amt : (parseFloat(a.availableLimit) || 0) + amt;
-              return { 
-                ...a, 
-                cardDebt: newDebt, 
-                availableLimit: newAvailable,
-                balance: -newDebt 
-              };
-            } else {
-              return { ...a, balance: formType === "income" ? a.balance + amt : a.balance - amt };
-            }
-          }
-          return a;
-        });
-
-        const updatedState = { ...state, transactions: [...state.transactions, newTx], accounts: newAccounts };
-        setState(updatedState);
-        showToast(formType === "income" ? "¡Ingreso registrado con éxito!" : "¡Gasto registrado con éxito!");
-        setScreen("home");
-        
-        if (syncStatus === "connected") {
-          autoSyncToDrive(updatedState);
-        }
-      }
-
+        if (!form.amount || !form.accountId || !
       // --- MODIFICAR TRANSACCIÓN REGISTRADA CON RECALCULO ---
       function handleOpenEditTx(t) {
         setEditingTx({
@@ -3703,10 +3643,8 @@
               </button>
             ))}
           </nav>
-
         </div>
-      </div>
-    );
+       );
   }
 
   const root = ReactDOM.createRoot(document.getElementById("root"));
