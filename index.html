@@ -512,7 +512,69 @@
 
       // Registrar transacción
       function submitTransaction() {
-        if (!form.amount || !form.accountId || !
+        if (!form.amount || !form.accountId || !form.categoryId) {
+          return showToast("Completa todos los campos requeridos", "error");
+        }
+        const amt = parseFloat(form.amount);
+        if (isNaN(amt) || amt <= 0) return showToast("Monto inválido", "error");
+        
+        const acc = state.accounts.find(a => a.id === form.accountId);
+        if (!acc) return;
+
+        if (acc.isCreditCard) {
+          if (formType === "expense" && acc.availableLimit < amt) {
+            return showToast("Límite de crédito disponible insuficiente", "error");
+          }
+        } else if (acc.isLoan) {
+          if (formType === "expense" && acc.availableLimit < amt) {
+            return showToast("Límite del préstamo o monto disponible insuficiente", "error");
+          }
+        } else {
+          if (formType === "expense" && acc.balance < amt) {
+            return showToast("Saldo insuficiente en esa cuenta", "error");
+          }
+        }
+
+        const newTx = {
+          id: Date.now().toString(),
+          type: formType,
+          amount: amt,
+          accountId: form.accountId,
+          categoryId: form.categoryId,
+          note: form.note,
+          date: form.date,
+          accountName: acc.name,
+          categoryName: state.categories.find(c => c.id === form.categoryId)?.name || "Sin categoría",
+        };
+
+        const newAccounts = state.accounts.map(a => {
+          if (a.id === form.accountId) {
+            if (a.isCreditCard || a.isLoan) {
+              const newDebt = formType === "expense" ? (parseFloat(a.cardDebt) || 0) + amt : Math.max(0, (parseFloat(a.cardDebt) || 0) - amt);
+              const newAvailable = formType === "expense" ? (parseFloat(a.availableLimit) || 0) - amt : (parseFloat(a.availableLimit) || 0) + amt;
+              return { 
+                ...a, 
+                cardDebt: newDebt, 
+                availableLimit: newAvailable,
+                balance: -newDebt 
+              };
+            } else {
+              return { ...a, balance: formType === "income" ? a.balance + amt : a.balance - amt };
+            }
+          }
+          return a;
+        });
+
+        const updatedState = { ...state, transactions: [...state.transactions, newTx], accounts: newAccounts };
+        setState(updatedState);
+        showToast(formType === "income" ? "¡Ingreso registrado con éxito!" : "¡Gasto registrado con éxito!");
+        setScreen("home");
+        
+        if (syncStatus === "connected") {
+          autoSyncToDrive(updatedState);
+        }
+      }
+
       // --- MODIFICAR TRANSACCIÓN REGISTRADA CON RECALCULO ---
       function handleOpenEditTx(t) {
         setEditingTx({
