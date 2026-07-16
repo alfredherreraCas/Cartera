@@ -3371,22 +3371,40 @@
                   </div>
                 </div>
 
-                {/* RESUMEN DE FLUJO */}
-                <div className="bg-[#121824] p-5 rounded-3xl border border-slate-700 shadow-xl space-y-5">
+                {/* RESUMEN GENERAL (Saldos y Flujos) */}
+                <div className="bg-[#121824] p-5 rounded-3xl border border-slate-700 shadow-xl space-y-4">
+                  
+                  {/* Fila 1: Saldos Reales de la Cuenta */}
+                  <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="bg-[#56426f]/30 p-3 rounded-2xl border border-[#6b528a]/50">
+                      <div className="text-[10px] text-[#dcd1ea] font-bold uppercase mb-1">Saldo Inicial</div>
+                      <div className="text-sm font-bold text-white">{fmt(accountBalanceContext - truePeriodNetForAccounts)}</div>
+                    </div>
+                    <div className="bg-indigo-500/20 p-3 rounded-2xl border border-indigo-500/40">
+                      <div className="text-[10px] text-indigo-300 font-bold uppercase mb-1">Saldo Actual</div>
+                      <div className="text-sm font-black text-white">{fmt(accountBalanceContext)}</div>
+                    </div>
+                  </div>
+
+                  <div className="h-px w-full bg-slate-700/50"></div>
+
+                  {/* Fila 2: Flujo del Filtro (Entradas vs Salidas) */}
                   <div className="space-y-2">
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">📊 Flujo del Periodo</div>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">📊 Flujo de Movimientos</div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                      <div className="bg-emerald-500/10 p-3 rounded-2xl border border-emerald-500/20">
-                        <div className="text-emerald-500 font-semibold uppercase">Ingreso</div>
+                      <div className="bg-emerald-500/10 p-2.5 rounded-2xl border border-emerald-500/20">
+                        <div className="text-emerald-500 font-semibold uppercase text-[10px]">Entradas</div>
                         <div className="font-bold text-emerald-400 mt-1">{fmt(qIncome)}</div>
                       </div>
-                      <div className="bg-rose-500/10 p-3 rounded-2xl border border-rose-500/20">
-                        <div className="text-rose-500 font-semibold uppercase">Gasto</div>
+                      <div className="bg-rose-500/10 p-2.5 rounded-2xl border border-rose-500/20">
+                        <div className="text-rose-500 font-semibold uppercase text-[10px]">Salidas</div>
                         <div className="font-bold text-rose-400 mt-1">{fmt(qExpense)}</div>
                       </div>
-                      <div className="bg-slate-800/50 p-3 rounded-2xl border border-slate-700">
-                        <div className="text-slate-400 font-semibold uppercase">Neto</div>
-                        <div className="font-bold text-white mt-1">{fmt(qIncome - qExpense)}</div>
+                      <div className="bg-slate-800/50 p-2.5 rounded-2xl border border-slate-700">
+                        <div className="text-slate-400 font-semibold uppercase text-[10px]">Diferencia</div>
+                        <div className={`font-bold mt-1 ${qIncome - qExpense < 0 ? 'text-rose-300' : 'text-emerald-300'}`}>
+                          {fmt(qIncome - qExpense)}
+                        </div>
                       </div>
                     </div>
                   </div>
