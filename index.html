@@ -227,9 +227,41 @@
       const [catForm, setCatForm] = useState({ name: "", type: "expense" });
       const [trfForm, setTrfForm] = useState({ fromId: "", toId: "", amount: "", date: TODAY() });
       const [qFilter, setQFilter] = useState({ categoryId: "", accountId: "", from: "", to: "" });
+      
       const [periodConfirm, setPeriodConfirm] = useState(false);
       const [periodType, setPeriodType] = useState("mensual"); // mensual | quincenal
 
+      // Estado y cálculos para la nueva pantalla de Historial
+      const [historyAccId, setHistoryAccId] = useState("");
+
+      const historyStats = useMemo(() => {
+        if (!historyAccId) return null;
+        const acc = state.accounts.find(a => a.id === historyAccId);
+        if (!acc) return null;
+
+        let periodIncome = 0;
+        let periodExpense = 0;
+
+        // Sumar todos los movimientos de ESTA cuenta en el periodo actual
+        state.transactions.forEach(t => {
+          if (t.type === "income" && t.accountId === historyAccId) periodIncome += t.amount;
+          if (t.type === "expense" && t.accountId === historyAccId) periodExpense += t.amount;
+          if (t.type === "transfer") {
+            if (t.toId === historyAccId) periodIncome += t.amount; // Recibió dinero
+            if (t.fromId === historyAccId) periodExpense += t.amount; // Envió dinero
+          }
+        });
+
+        // El saldo actual (negativo si es deuda)
+        const currentBalance = (acc.isCreditCard || acc.isLoan) ? -(parseFloat(acc.cardDebt) || 0) : (parseFloat(acc.balance) || 0);
+        
+        // Matemáticas inversas: Saldo Inicial = Saldo Actual - Ingresos + Egresos
+        const initialBalance = currentBalance - periodIncome + periodExpense;
+
+        return { initialBalance, periodIncome, periodExpense, currentBalance };
+      }, [historyAccId, state.transactions, state.accounts]);
+
+      // --- FORMULARIOS PRESUPUESTO Y RECURRENTES ---	
       // --- FORMULARIOS PRESUPUESTO Y RECURRENTES ---
       const [budgetInput, setBudgetInput] = useState({ categoryId: "", limit: "" });
       const [recurrentForm, setRecurrentForm] = useState({ name: "", categoryId: "", amount: "", accountId: "" });
@@ -2052,6 +2084,7 @@
 
             <h1 className="font-bold text-sm tracking-wide uppercase text-slate-200">
               {screen === "home" ? "Mi Cartera" :
+			   screen === "history" ? "Historial de Cuenta" :
                screen === "accounts" ? "Cuentas" :
                screen === "categories" ? "Categorías" :
                screen === "transfers" ? "Transferencias" :
@@ -3722,38 +3755,80 @@
               </div>
             )}
 
+         {/* PANTALLA: HISTORIAL DE PERIODO (NUEVA) */}
+            {screen === "history" && (
+              <div className="p-4 pb-24 space-y-6 animate-in fade-in zoom-in duration-300">
+                
+                {/* SELECTOR DE CUENTA */}
+                <div className="bg-[#121824] border border-[#1e293b] rounded-3xl p-5 shadow-lg">
+                  <select 
+                    value={historyAccId} 
+                    onChange={e => setHistoryAccId(e.target.value)}
+                    className="w-full bg-[#0a0f19] border border-[#1e293b] rounded-xl py-3.5 px-4 text-white text-sm font-semibold focus:border-indigo-500 outline-none"
+                  >
+                    <option value="">— Selecciona la cuenta —</option>
+                    {state.accounts.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* TARJETAS MORADAS (Estilo del boceto) */}
+                {historyAccId && historyStats && (
+                  <div className="space-y-4 max-w-[90%] mx-auto">
+                    
+                    <div className="bg-[#56426f] p-5 rounded-[2rem] border border-[#6b528a] text-center shadow-xl">
+                      <div className="text-xs text-[#dcd1ea] font-medium mb-1 tracking-wide">saldo inicial del periodo</div>
+                      <div className="text-xl font-bold text-white">{fmt(historyStats.initialBalance)}</div>
+                    </div>
+
+                    <div className="bg-[#56426f] p-5 rounded-[2rem] border border-[#6b528a] text-center shadow-xl">
+                      <div className="text-xs text-[#dcd1ea] font-medium mb-1 tracking-wide">Total ingresos a esa cuenta</div>
+                      <div className="text-xl font-bold text-white">{fmt(historyStats.periodIncome)}</div>
+                    </div>
+
+                    <div className="bg-[#56426f] p-5 rounded-[2rem] border border-[#6b528a] text-center shadow-xl">
+                      <div className="text-xs text-[#dcd1ea] font-medium mb-1 tracking-wide">total egresos de esa cuenta</div>
+                      <div className="text-xl font-bold text-white">{fmt(historyStats.periodExpense)}</div>
+                    </div>
+
+                    <div className="bg-[#56426f] p-5 rounded-[2rem] border border-[#6b528a] text-center shadow-xl">
+                      <div className="text-xs text-[#dcd1ea] font-medium mb-1 tracking-wide">saldo actual</div>
+                      <div className="text-[10px] text-[#c0add6] mb-1 leading-tight">(saldo inicial del periodo + total entradas)<br/>- total salidas</div>
+                      <div className="text-xl font-bold text-white">{fmt(historyStats.currentBalance)}</div>
+                    </div>
+
+                  </div>
+                )}
+                
+                {historyAccId && !historyStats && (
+                  <div className="text-center text-slate-500 text-xs py-10">Cuenta no encontrada.</div>
+                )}
+              </div>
+            )}
+
           </main>
 
-          {/* MENÚ DE NAVEGACIÓN INFERIOR */}
+          {/* MENÚ DE NAVEGACIÓN INFERIOR (MODIFICADO) */}
           <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-[#0e1320]/95 backdrop-blur-md border-t border-[#1e293b] grid grid-cols-5 py-2.5 px-2 z-40 no-print">
             {[
               { label: "Inicio", icon: "🏠", screen: "home" },
-              { label: "Cuentas", icon: "💳", screen: "accounts" },
+              { label: "Historial", icon: "📊", screen: "history" },
               { label: "Consultas", icon: "🔍", screen: "queries" },
               { label: "Pagos", icon: "📅", screen: "payments" },
               { label: "Nube", icon: "☁️", screen: "sync_settings" }
             ].map(tab => (
-              <button 
-                key={tab.screen}
-                onClick={() => setScreen(tab.screen)}
-                className="flex flex-col items-center justify-center transition-all active:scale-90"
-              >
+              <button key={tab.screen} onClick={() => setScreen(tab.screen)} className="flex flex-col items-center justify-center transition-all active:scale-90">
                 <span className="text-lg">{tab.icon}</span>
-                <span className={`text-[10px] font-semibold mt-0.5 ${
-                  screen === tab.screen ? "text-indigo-400" : "text-[#64748b]"
-                }`}>
-                  {tab.label}
-                </span>
+                <span className={`text-[10px] font-bold ${screen === tab.screen ? "text-indigo-400" : "text-slate-500"}`}>{tab.label}</span>
               </button>
             ))}
           </nav>
-
         </div>
       );
     }
-
     const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(App ? <App /> : <div>Error cargando componente react</div>);
+    root.render(<App />);
   </script>
 </body>
 </html>
