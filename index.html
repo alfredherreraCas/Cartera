@@ -337,6 +337,9 @@
         const list = [];
         state.transactions.forEach(t => {
           if (t.type === "transfer") {
+            // Si el usuario filtra por una categoría específica (ej. "Sueldo"), ocultamos las transferencias
+            if (qFilter.categoryId) return; 
+
             const matchFrom = !qFilter.accountId || t.fromId === qFilter.accountId;
             const matchTo = !qFilter.accountId || t.toId === qFilter.accountId;
             
@@ -353,8 +356,35 @@
         return list.filter(t => (!qFilter.from || t.date >= qFilter.from) && (!qFilter.to || t.date <= qFilter.to)).sort((a, b) => b.date.localeCompare(a.date));
       }, [state.transactions, qFilter]);
 
-      const qIncome = useMemo(() => qResults.filter(t => t.virtualType === "income").reduce((s, t) => s + Math.abs(t.displayAmount), 0), [qResults]);
-      const qExpense = useMemo(() => qResults.filter(t => t.virtualType === "expense").reduce((s, t) => s + Math.abs(t.displayAmount), 0), [qResults]);
+      const qIncome = useMemo(() => {
+        return qResults.filter(t => {
+          if (t.virtualType === "income") {
+            // Si vemos TODAS las cuentas, NO sumamos transferencias de entrada
+            // para no inflar los ingresos globales de manera artificial.
+            if (!qFilter.accountId && t.type === "transfer") return false;
+            
+            return true; // Si hay una cuenta filtrada, SÍ lo toma como ingreso
+          }
+          return false;
+        }).reduce((s, t) => s + Math.abs(t.displayAmount), 0);
+      }, [qResults, qFilter.accountId]);
+
+      const qExpense = useMemo(() => {
+        return qResults.filter(t => {
+          if (t.virtualType === "expense") {
+            // Si vemos TODAS las cuentas...
+            if (!qFilter.accountId && t.type === "transfer") {
+              // ... Permitimos que cuente como Gasto Global SOLO si fue un pago a Deuda (T/C o Préstamo)
+              const toAccount = state.accounts.find(a => a.id === t.toId);
+              if (toAccount && (toAccount.isCreditCard || toAccount.isLoan)) return true;
+              
+              return false; // Las transferencias entre débitos regulares no son gastos globales
+            }
+            return true; // Si hay una cuenta filtrada, SÍ lo toma como gasto
+          }
+          return false;
+        }).reduce((s, t) => s + Math.abs(t.displayAmount), 0);
+      }, [qResults, qFilter.accountId, state.accounts]);
 
       const accountBalanceContext = useMemo(() => {
         let sum = 0;
@@ -578,8 +608,13 @@
         const acc = state.accounts.find(a => a.id === form.accountId);
         if (!acc) return;
 
+        // Identificar si la categoría es la excepción para sobregiro de tarjeta
+        const selectedCategory = state.categories.find(c => c.id === form.categoryId);
+        const isInterestCategory = selectedCategory && (selectedCategory.name === "Interés e iva TC" || selectedCategory.name === "Interes e iva TC");
+
         if (acc.isCreditCard) {
-          if (formType === "expense" && acc.availableLimit < amt) {
+          // Si es tarjeta de crédito, bloqueamos solo si NO es la categoría de intereses
+          if (formType === "expense" && acc.availableLimit < amt && !isInterestCategory) {
             return showToast("Límite de crédito disponible insuficiente", "error");
           }
         } else if (acc.isLoan) {
@@ -684,13 +719,17 @@
           return a;
         });
 
-        // 2. VALIDAR fondos/límites en la nueva cuenta
+       // 2. VALIDAR fondos/límites en la nueva cuenta
         const targetAcc = updatedAccounts.find(a => a.id === editingTx.accountId);
         if (!targetAcc) return showToast("La cuenta seleccionada ya no existe", "error");
 
         if (originalTx.type === "expense") {
+          const selectedCategory = state.categories.find(c => c.id === editingTx.categoryId);
+          const isInterestCategory = selectedCategory && (selectedCategory.name === "Interés e iva TC" || selectedCategory.name === "Interes e iva TC");
+
           if (targetAcc.isCreditCard || targetAcc.isLoan) {
-            if (targetAcc.availableLimit < newAmount) {
+            // Permitimos pasar el límite solo si es Tarjeta de Crédito y es categoría de Interés
+            if (targetAcc.availableLimit < newAmount && !(targetAcc.isCreditCard && isInterestCategory)) {
               return showToast("Límite de crédito disponible insuficiente en la cuenta seleccionada", "error");
             }
           } else {
