@@ -2796,10 +2796,30 @@
                             </span>
                           </div>
                           
-                          <div className="flex items-center gap-2">
-                            <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-extrabold px-2.5 py-1 rounded-full border border-emerald-500/20">
+                          <div className="flex items-center gap-1.5">
+                            <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-extrabold px-2 py-1 rounded-lg border border-emerald-500/20">
                               ✓ Al corriente
                             </span>
+                            
+                            {/* NUEVO BOTÓN: Abonar extra aunque ya esté al corriente */}
+                            {parseFloat(a.cardDebt) > 0 && (
+                              <button 
+                                onClick={() => {
+                                  setTrfForm({
+                                    fromId: state.accounts.find(x => !x.isCreditCard && !x.isLoan)?.id || "",
+                                    toId: a.id,
+                                    amount: a.cardDebt.toString(),
+                                    date: TODAY()
+                                  });
+                                  setScreen("transfers");
+                                }}
+                                className="bg-indigo-600/20 hover:bg-indigo-500/30 text-indigo-400 border border-indigo-500/30 text-[10px] font-bold px-2 py-1 rounded-lg transition-all"
+                                title="Hacer un abono adicional"
+                              >
+                                ➕ Abonar
+                              </button>
+                            )}
+
                             {a.lastPaidCycle && (
                               <button 
                                 onClick={() => toggleAccountPaymentStatus(a.id)}
