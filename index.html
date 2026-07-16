@@ -319,14 +319,22 @@
 
       // Movimientos recientes
       const recentTx = useMemo(() => {
-        return [...state.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+        return [...state.transactions]
+          .sort((a, b) => {
+            if (a.date !== b.date) return b.date.localeCompare(a.date);
+            return b.id.localeCompare(a.id); // Desempate por hora exacta
+          })
+          .slice(0, 5);
       }, [state.transactions]);
 
       // Historial completo de transferencias para pestaña interna
       const transfersHistory = useMemo(() => {
         return state.transactions
           .filter(t => t.type === "transfer")
-          .sort((a, b) => b.date.localeCompare(a.date));
+          .sort((a, b) => {
+            if (a.date !== b.date) return b.date.localeCompare(a.date);
+            return b.id.localeCompare(a.id); // Desempate por hora exacta
+          });
       }, [state.transactions]);
 
       // Alertas de deudas que vencen en 5 días o menos (y no han sido pagadas este mes o ciclo)
@@ -385,7 +393,15 @@
             }
           }
         });
-        return list.filter(t => (!qFilter.from || t.date >= qFilter.from) && (!qFilter.to || t.date <= qFilter.to)).sort((a, b) => b.date.localeCompare(a.date));
+        return list
+          .filter(t => (!qFilter.from || t.date >= qFilter.from) && (!qFilter.to || t.date <= qFilter.to))
+          .sort((a, b) => {
+            if (a.date !== b.date) return b.date.localeCompare(a.date);
+            // Quitamos los sufijos _from/_to de las transferencias para leer su hora original
+            const idA = a.id.replace("_from", "").replace("_to", "");
+            const idB = b.id.replace("_from", "").replace("_to", "");
+            return idB.localeCompare(idA); // Desempate por hora exacta
+          });
       }, [state.transactions, qFilter]);
 
       const qIncome = useMemo(() => {
